@@ -34,7 +34,8 @@ func (h *Health) Readiness(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
 
-	dbErr := h.pool.Ping(ctx)
+	var dbCheck int
+	dbErr := h.pool.QueryRow(ctx, "SELECT 1").Scan(&dbCheck)
 	redisErr := h.cache.Ping(ctx)
 
 	data := map[string]any{"db": "up", "redis": "up"}
