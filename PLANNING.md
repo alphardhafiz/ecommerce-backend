@@ -16,7 +16,7 @@ Pecahan task per fase mengikuti PRD §U (Development Roadmap). Sumber kebenaran:
 - [x] Config loader (`internal/config`) — baca env, validasi wajib
 - [x] Structured logger + request ID middleware (`pkg/logger`, `internal/middleware`)
 - [x] Migrasi: `users`, `refresh_tokens`, `password_reset_tokens`
-- [ ] Migrasi: `categories`, `products`, `product_images` (+ `pg_trgm` untuk search)
+- [x] Migrasi: `categories`, `products`, `product_images` (+ `pg_trgm` untuk search)
 - [ ] Migrasi: `wishlists`, `carts`, `cart_items`, `addresses`
 - [ ] Migrasi: `orders`, `order_items`, `payments`, `payment_notifications`
 - [ ] Koneksi pgx (pool) + Redis client wrapper (`internal/cache`)
