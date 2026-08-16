@@ -15,7 +15,7 @@ Pecahan task per fase mengikuti PRD §U (Development Roadmap). Sumber kebenaran:
 - [x] Struktur folder per PRD §M.2 (`cmd/`, `internal/{config,handler,service,repository,middleware,model,cache,payment,mail,jobs}`, `pkg/`, `migrations/`)
 - [x] Config loader (`internal/config`) — baca env, validasi wajib
 - [x] Structured logger + request ID middleware (`pkg/logger`, `internal/middleware`)
-- [ ] Migrasi: `users`, `refresh_tokens`, `password_reset_tokens`
+- [x] Migrasi: `users`, `refresh_tokens`, `password_reset_tokens`
 - [ ] Migrasi: `categories`, `products`, `product_images` (+ `pg_trgm` untuk search)
 - [ ] Migrasi: `wishlists`, `carts`, `cart_items`, `addresses`
 - [ ] Migrasi: `orders`, `order_items`, `payments`, `payment_notifications`
