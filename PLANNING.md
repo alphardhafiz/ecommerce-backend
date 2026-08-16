@@ -11,7 +11,7 @@ Pecahan task per fase mengikuti PRD §U (Development Roadmap). Sumber kebenaran:
 ## Fase 1 — Project setup + database
 
 - [x] Init repo Go (`go mod init`), `.gitignore`, `.env.example`
-- [ ] `docker-compose.yml` lokal: PostgreSQL 16 + Redis 7
+- [x] `docker-compose.yml` lokal: PostgreSQL 16 + Redis 7
 - [ ] Struktur folder per PRD §M.2 (`cmd/`, `internal/{config,handler,service,repository,middleware,model,cache,payment,mail,jobs}`, `pkg/`, `migrations/`)
 - [ ] Config loader (`internal/config`) — baca env, validasi wajib
 - [ ] Structured logger + request ID middleware (`pkg/logger`, `internal/middleware`)
