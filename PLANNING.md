@@ -1,0 +1,124 @@
+# PLANNING.md — Server (Go API)
+
+Pecahan task per fase mengikuti PRD §U (Development Roadmap). Sumber kebenaran: [`../docs/PRD.md`](../docs/PRD.md) + [`../docs/AGENTS.md`](../docs/AGENTS.md).
+
+**Cara pakai:**
+- Kerjakan berurutan per fase. Jangan mulai fase berikutnya sebelum DoD fase sekarang terpenuhi.
+- Satu saat = satu task. Centang `[x]` hanya setelah task selesai (test + lint jalan).
+- Task belum dipecah detail → pecah dulu sebelum coding (docs/AGENTS.md aturan 3).
+- Endpoint baru wajib dicatat di PRD §E; tabel baru di PRD §D.
+
+## Fase 1 — Project setup + database
+
+- [ ] Init repo Go (`go mod init`), `.gitignore`, `.env.example`
+- [ ] `docker-compose.yml` lokal: PostgreSQL 16 + Redis 7
+- [ ] Struktur folder per PRD §M.2 (`cmd/`, `internal/{config,handler,service,repository,middleware,model,cache,payment,mail,jobs}`, `pkg/`, `migrations/`)
+- [ ] Config loader (`internal/config`) — baca env, validasi wajib
+- [ ] Structured logger + request ID middleware (`pkg/logger`, `internal/middleware`)
+- [ ] Migrasi: `users`, `refresh_tokens`, `password_reset_tokens`
+- [ ] Migrasi: `categories`, `products`, `product_images` (+ `pg_trgm` untuk search)
+- [ ] Migrasi: `wishlists`, `carts`, `cart_items`, `addresses`
+- [ ] Migrasi: `orders`, `order_items`, `payments`, `payment_notifications`
+- [ ] Koneksi pgx (pool) + Redis client wrapper (`internal/cache`)
+- [ ] `GET /health` + `GET /health/ready` (ping DB & Redis)
+- [ ] Test: migration up bersih, health check 200
+
+**DoD (PRD §U.1):** semua tabel ter-migrate, app connect DB & Redis, health check jalan.
+
+## Fase 2 — Authentication + RBAC
+
+- [ ] Repository `users` (create, find by email, update)
+- [ ] JWT helper (HS256, claims `user_id`/`role`/`jti`, exp 15m) + validator
+- [ ] `POST /auth/register` (bcrypt cost 12, validasi email/password)
+- [ ] `POST /auth/login` (access token di body, refresh token httpOnly cookie)
+- [ ] `POST /auth/refresh` (rotation + reuse detection → revoke semua sesi + CSRF double-submit)
+- [ ] `POST /auth/logout` (revoke refresh token, hapus cookie)
+- [ ] Integrasi Resend (`internal/mail`) + `POST /auth/forgot-password` (response generic, kirim email async)
+- [ ] `POST /auth/reset-password` (invalidate token + semua refresh token user)
+- [ ] Middleware `RequireAuth` + `RequireRole("admin")`
+- [ ] `GET /users/me`, `PATCH /users/me` (tanpa field `role` dari body)
+- [ ] `GET /admin/users`, `PATCH /admin/users/:id/status`
+- [ ] Test: auth_service unit (termasuk refresh reuse detection, reset revoke semua sesi)
+
+**DoD (PRD §U.2):** semua endpoint `/auth/*` berfungsi, middleware role-check teruji.
+
+## Fase 3 — Product + category
+
+- [ ] Repository categories + products (soft delete, partial index)
+- [ ] `GET /categories`, `POST/PUT/DELETE /admin/categories`
+- [ ] `POST /admin/products` + `PUT/DELETE /admin/products/:id` (soft delete)
+- [ ] `PATCH /admin/products/:id/status`, `PATCH /admin/products/:id/stock`
+- [ ] `GET /products` (pagination, search `ILIKE`, filter category/harga/stock, sort)
+- [ ] `GET /products/:id` (detail + images + kategori)
+- [ ] Upload image ke object storage (`internal/` client) + `POST/DELETE /admin/products/:id/images[/:imageId]` (validasi MIME/ukuran, rename UUID)
+- [ ] Test: listing filter/sort, soft delete tidak muncul di publik
+
+**DoD (PRD §U.3):** admin kelola produk lengkap dengan gambar; user bisa browse & search.
+
+## Fase 4 — Wishlist + cart
+
+- [ ] `GET/POST/DELETE /wishlist[/:productId]` (unique constraint → 409, exclude soft-deleted)
+- [ ] Cart lazy creation (1 user = 1 cart), repo cart + cart_items
+- [ ] `GET /cart` (subtotal on-the-fly dari harga DB, flag `is_available`)
+- [ ] `POST /cart/items` (merge quantity), `PATCH /cart/items/:id`, `DELETE /cart/items/:id`, `DELETE /cart`
+- [ ] Test: duplikat wishlist 409, item inactive `is_available:false` tidak masuk total
+
+**DoD (PRD §U.4):** wishlist & cart end-to-end, termasuk handling produk inactive/dihapus.
+
+## Fase 5 — Address + order (tanpa payment)
+
+- [ ] CRUD `/addresses` + `PATCH /addresses/:id/default` (satu default, transaction)
+- [ ] `POST /orders/checkout`: DB transaction, `SELECT ... FOR UPDATE` (urutan kunci konsisten), validasi ulang harga/stock/is_active, snapshot address & order_items, kurangi stock, hapus cart items, payment stub
+- [ ] `GET /orders` (pagination, milik sendiri), `GET /orders/:id` (ownership check → 403)
+- [ ] `POST /orders/:id/cancel` (hanya PENDING, stock kembali dalam transaction)
+- [ ] `GET /admin/orders`, `PATCH /admin/orders/:id/status` (state transition PRD §C.9, final state terkunci)
+- [ ] Test: **concurrency checkout stock=1** (2 goroutine, hanya 1 sukses)
+
+**DoD (PRD §U.5):** checkout membuat order PENDING dengan stock berkurang benar, concurrency test lulus.
+
+## Fase 6 — Midtrans integration
+
+- [ ] Midtrans Snap client (`internal/payment`): create transaction, status check
+- [ ] Integrasi ke checkout: insert `payments`, rollback semua jika Midtrans gagal
+- [ ] `POST /payments/webhook`: verifikasi signature SHA-512 + server-to-server status check
+- [ ] Idempotency: cek status sebelum update (row lock), log `payment_notifications`, duplicate → tetap 200
+- [ ] Handle `success`/`expire`/`cancel` (stock kembali di transaction yang sama, `orders` + `payments` satu transaction)
+- [ ] Scheduled job expire order PENDING > 60 menit (`internal/jobs`)
+- [ ] `GET /orders/:id/payment` (ownership check)
+- [ ] Test: webhook payload valid/invalid signature + duplicate delivery
+
+**DoD (PRD §U.6):** full flow sandbox berhasil: checkout → bayar → webhook → order PAID.
+
+## Fase 7 — Admin dashboard
+
+- [ ] `GET /admin/dashboard` (total users/products/orders per status/revenue/low stock + filter `period`)
+- [ ] Test: angka sesuai data seed
+
+**DoD (PRD §U.7):** dashboard menampilkan angka akurat sesuai DB.
+
+## Fase 8 — Redis + optimization
+
+- [ ] Product list cache (`products:list:{hash}`, TTL 5m, invalidasi prefix via SCAN+DEL)
+- [ ] Product detail cache (`product:detail:{id}`, TTL 10m, invalidasi targeted)
+- [ ] Category list cache (`categories:active`, TTL 30m)
+- [ ] Rate limit Redis: login/register strict (fail-closed), endpoint umum (fail-open)
+- [ ] Test: fallback saat Redis down
+
+**DoD (PRD §U.8):** cache hit terverifikasi, rate limit teruji, fallback Redis down bekerja.
+
+## Fase 9 — Testing
+
+- [ ] Unit test service domain kritis (checkout, payment, auth)
+- [ ] Integration test repository (test DB terpisah/testcontainers)
+- [ ] API test `httptest` (status code, response shape, middleware auth)
+- [ ] Webhook test lengkap (idempotency, state transition)
+
+**DoD (PRD §U.9):** coverage domain kritis ≥ 70%, E2E flow minimal lulus di CI.
+
+## Fase 10 — Deployment
+
+- [ ] Dockerfile + docker-compose production + Nginx + HTTPS (Let's Encrypt)
+- [ ] Backup `pg_dump` cron (retensi 7 hari)
+- [ ] Health check Docker + uptime monitor eksternal
+
+**DoD (PRD §U.10):** aplikasi diakses via domain publik, checkout end-to-end di production sandbox.
