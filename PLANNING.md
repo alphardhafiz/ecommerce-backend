@@ -18,7 +18,7 @@ Pecahan task per fase mengikuti PRD §U (Development Roadmap). Sumber kebenaran:
 - [x] Migrasi: `users`, `refresh_tokens`, `password_reset_tokens`
 - [x] Migrasi: `categories`, `products`, `product_images` (+ `pg_trgm` untuk search)
 - [x] Migrasi: `wishlists`, `carts`, `cart_items`, `addresses`
-- [ ] Migrasi: `orders`, `order_items`, `payments`, `payment_notifications`
+- [x] Migrasi: `orders`, `order_items`, `payments`, `payment_notifications`
 - [ ] Koneksi pgx (pool) + Redis client wrapper (`internal/cache`)
 - [ ] `GET /health` + `GET /health/ready` (ping DB & Redis)
 - [ ] Test: migration up bersih, health check 200
