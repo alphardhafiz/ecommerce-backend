@@ -21,7 +21,7 @@ Pecahan task per fase mengikuti PRD §U (Development Roadmap). Sumber kebenaran:
 - [x] Migrasi: `orders`, `order_items`, `payments`, `payment_notifications`
 - [x] Koneksi pgx (pool) + Redis client wrapper (`internal/cache`)
 - [x] `GET /health` + `GET /health/ready` (ping DB & Redis)
-- [ ] Test: migration up bersih, health check 200
+- [x] Test: migration up bersih, health check 200
 
 **DoD (PRD §U.1):** semua tabel ter-migrate, app connect DB & Redis, health check jalan.
 
