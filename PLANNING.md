@@ -3,14 +3,14 @@
 Pecahan task per fase mengikuti PRD §U (Development Roadmap). Sumber kebenaran: [`../docs/PRD.md`](../docs/PRD.md) + [`../docs/AGENTS.md`](../docs/AGENTS.md).
 
 **Cara pakai:**
-- Kerjakan berurutan per fase. Jangan mulai fase berikutnya sebelum DoD fase sekarang terpenuhi.
+- Kerjakan berurutan per task. Jangan mulai fase berikutnya sebelum DoD fase sekarang terpenuhi.
 - Satu saat = satu task. Centang `[x]` hanya setelah task selesai (test + lint jalan).
 - Task belum dipecah detail → pecah dulu sebelum coding (docs/AGENTS.md aturan 3).
 - Endpoint baru wajib dicatat di PRD §E; tabel baru di PRD §D.
 
 ## Fase 1 — Project setup + database
 
-- [ ] Init repo Go (`go mod init`), `.gitignore`, `.env.example`
+- [x] Init repo Go (`go mod init`), `.gitignore`, `.env.example`
 - [ ] `docker-compose.yml` lokal: PostgreSQL 16 + Redis 7
 - [ ] Struktur folder per PRD §M.2 (`cmd/`, `internal/{config,handler,service,repository,middleware,model,cache,payment,mail,jobs}`, `pkg/`, `migrations/`)
 - [ ] Config loader (`internal/config`) — baca env, validasi wajib
