@@ -26,6 +26,9 @@ Baca ini sebelum menulis kode apa pun. Sumber kebenaran: [`../docs/AGENTS.md`](.
 | Test | `go test ./...` |
 | Lint | `golangci-lint run` |
 
+## Aturan Pembuatan github issue
+kalau saya minta buat github issue untuk suatu task, jangan buat planning secara low level atau detail, tetapi buat secara high level. yang mengimplementasikan nanti adalah junior programmer/AI model murah.
+
 ## Aturan commit
 
 **JANGAN commit, push, atau buat PR sebelum user review. commit sedeskriptif mungkin** Tampilkan `git diff`/ringkasan perubahan, tunggu persetujuan eksplisit.
