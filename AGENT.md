@@ -29,4 +29,4 @@ Baca ini sebelum menulis kode apa pun. Sumber kebenaran: [`../docs/AGENTS.md`](.
 ## Aturan commit
 
 **JANGAN commit, push, atau buat PR sebelum user review. commit sedeskriptif mungkin** Tampilkan `git diff`/ringkasan perubahan, tunggu persetujuan eksplisit.
-commit dalam bahasa inggris sesuai convention global
+commit dalam bahasa inggris sesuai convention global. tandai task selesai di PLANNING.md
