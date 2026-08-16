@@ -13,6 +13,13 @@
 3. Setelah selesai (test + lint hijau), centang `[x]` di PLANNING.md.
 4. Untuk task baru: buat GitHub issue dulu (lihat aturan issue di bawah) sebelum mengerjakan.
 
+## Aturan mulai & berhenti kerja (PENTING, sering salah)
+
+1. **Membuat issue ≠ mengerjakan issue.** Kalau user hanya minta "buat github issue", berhenti SETELAH issue dibuat. JANGAN lanjut eksekusi.
+2. **Mulai menulis kode HANYA setelah user memerintah eksplisit**, contoh: "eksekusi", "kerjakan", "lanjut".
+3. **Setiap tahap selesai → berhenti dan lapor singkat.** Jangan melanjutkan ke tahap berikutnya (commit, centang PLANNING, close issue, task berikutnya) tanpa perintah user.
+4. **Sebelum mulai bekerja, baca ulang pesan terakhir user.** Kalau ragu apa yang diminta, tanya dulu — jangan asumsikan "sekaligus kerjakan".
+
 ## Aturan khusus backend
 
 1. **Struktur kode**: ikuti PRD §M.2 — `handler → service → repository`. Jangan tambah layer baru. `payment/` dan `mail/` hanya untuk integrasi eksternal, `jobs/` untuk scheduled job.
