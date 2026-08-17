@@ -35,7 +35,7 @@ Pecahan task per fase mengikuti PRD §U (Development Roadmap). Sumber kebenaran:
 - [x] `POST /auth/logout` (revoke refresh token, hapus cookie)
 - [x] Integrasi Resend (`internal/mail`) + `POST /auth/forgot-password` (response generic, kirim email async)
 - [x] `POST /auth/reset-password` (invalidate token + semua refresh token user)
-- [ ] Middleware `RequireAuth` + `RequireRole("admin")`
+- [x] Middleware `RequireAuth` + `RequireRole("admin")`
 - [ ] `GET /users/me`, `PATCH /users/me` (tanpa field `role` dari body)
 - [ ] `GET /admin/users`, `PATCH /admin/users/:id/status`
 - [ ] Test: auth_service unit (termasuk refresh reuse detection, reset revoke semua sesi)
