@@ -55,5 +55,9 @@ Saat user minta dibuatkan GitHub issue untuk sebuah task:
 ## Aturan commit
 
 1. **JANGAN commit, push, atau buat PR sebelum user review** dan mendapat persetujuan eksplisit. Tampilkan `git diff`/ringkasan perubahan dulu.
-2. Pesan commit dalam bahasa Inggris, deskriptif, mengikuti conventional commits (contoh: `feat:`, `fix:`, `chore:`, `docs:`).
-3. Setiap task selesai → tandai `[x]` di PLANNING.md sebelum atau bersama commit.
+2. **Checkpoint wajib di akhir setiap task** (selalu lakukan, tanpa kecuali):
+   1. Jalankan `git status` + `git diff --stat`, tampilkan ringkasan ke user.
+   2. Tanya: "Commit + push + close issue?" — lalu **BERHENTI**.
+   3. TIDAK boleh lanjut ke perintah `git commit`/`git push`/`gh issue close` sampai user menjawab setuju secara eksplisit.
+3. Pesan commit dalam bahasa Inggris, deskriptif, mengikuti conventional commits (contoh: `feat:`, `fix:`, `chore:`, `docs:`).
+4. Setiap task selesai → tandai `[x]` di PLANNING.md sebelum atau bersama commit.

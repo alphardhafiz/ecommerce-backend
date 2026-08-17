@@ -13,6 +13,7 @@ import (
 	"ecommerce/server/internal/config"
 	"ecommerce/server/internal/database"
 	"ecommerce/server/internal/handler"
+	jwtpkg "ecommerce/server/internal/jwt"
 	"ecommerce/server/internal/middleware"
 	"ecommerce/server/internal/repository"
 	"ecommerce/server/internal/service"
@@ -51,13 +52,16 @@ func main() {
 	health := handler.NewHealth(pool, redisCache)
 
 	userRepo := repository.NewUserRepo(pool)
-	authSvc := service.NewAuthService(userRepo)
+	refreshTokenRepo := repository.NewRefreshTokenRepo(pool)
+	jwtHelper := jwtpkg.New(cfg.JWTSecret, jwtpkg.DefaultTTL)
+	authSvc := service.NewAuthService(userRepo, refreshTokenRepo, jwtHelper)
 	auth := handler.NewAuth(authSvc)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", health.Liveness)
 	mux.HandleFunc("GET /health/ready", health.Readiness)
 	mux.HandleFunc("POST /auth/register", auth.Register)
+	mux.HandleFunc("POST /auth/login", auth.Login)
 
 	server := &http.Server{
 		Addr:    ":" + cfg.Port,
