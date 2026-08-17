@@ -1,4 +1,4 @@
-# AGENT.md — Server (Go API)
+# AGENTS.md — Server (Go API)
 
 ## Sebelum mulai bekerja
 
