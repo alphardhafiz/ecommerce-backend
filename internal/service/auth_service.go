@@ -27,8 +27,9 @@ const (
 )
 
 var (
-	ErrInvalidCredentials = errors.New("invalid credentials")
-	ErrInactiveAccount    = errors.New("account inactive")
+	ErrInvalidCredentials  = errors.New("invalid credentials")
+	ErrInactiveAccount     = errors.New("account inactive")
+	ErrInvalidRefreshToken = errors.New("invalid refresh token")
 )
 
 type FieldError struct {
@@ -103,6 +104,55 @@ func randomBytes(n int) ([]byte, error) {
 		return nil, err
 	}
 	return b, nil
+}
+
+func (s *AuthService) Refresh(ctx context.Context, rawRefreshToken string) (*LoginResult, error) {
+	tokenBytes, err := base64.RawURLEncoding.DecodeString(rawRefreshToken)
+	if err != nil {
+		return nil, ErrInvalidRefreshToken
+	}
+	oldHash := sha256.Sum256(tokenBytes)
+
+	newToken, err := randomBytes(refreshTokenBytes)
+	if err != nil {
+		return nil, err
+	}
+	newRaw := base64.RawURLEncoding.EncodeToString(newToken)
+	newHash := sha256.Sum256(newToken)
+
+	userID, err := s.refreshTokens.Rotate(ctx, hex.EncodeToString(oldHash[:]), hex.EncodeToString(newHash[:]), time.Now().Add(refreshTokenTTL))
+	if err != nil {
+		switch {
+		case errors.Is(err, repository.ErrRefreshTokenNotFound),
+			errors.Is(err, repository.ErrRefreshTokenExpired),
+			errors.Is(err, repository.ErrRefreshTokenReuse):
+			// Uniform error: don't reveal whether the token was unknown,
+			// expired, or reused.
+			return nil, ErrInvalidRefreshToken
+		default:
+			return nil, err
+		}
+	}
+
+	user, err := s.users.FindByID(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	if user.Status != "active" {
+		return nil, ErrInactiveAccount
+	}
+
+	accessToken, err := s.jwt.Generate(user.ID, user.Role)
+	if err != nil {
+		return nil, err
+	}
+
+	return &LoginResult{
+		AccessToken:  accessToken,
+		ExpiresIn:    int(accessTokenTTL.Seconds()),
+		RefreshToken: newRaw,
+		User:         user,
+	}, nil
 }
 
 func (s *AuthService) Register(ctx context.Context, name, email, password, confirmPassword string) (*model.User, error) {

@@ -62,6 +62,7 @@ func main() {
 	mux.HandleFunc("GET /health/ready", health.Readiness)
 	mux.HandleFunc("POST /auth/register", auth.Register)
 	mux.HandleFunc("POST /auth/login", auth.Login)
+	mux.HandleFunc("POST /auth/refresh", auth.Refresh)
 
 	server := &http.Server{
 		Addr:    ":" + cfg.Port,

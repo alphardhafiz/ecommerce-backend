@@ -1,6 +1,9 @@
 package handler
 
 import (
+	"crypto/rand"
+	"crypto/subtle"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -11,6 +14,8 @@ import (
 
 const (
 	refreshCookieName   = "refresh_token"
+	csrfCookieName      = "csrf_token"
+	csrfHeaderName      = "X-CSRF-Token"
 	refreshCookieMaxAge = 7 * 24 * 60 * 60 // 7 days, seconds
 )
 
@@ -47,17 +52,35 @@ func (a *Auth) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	setSessionCookies(w, result.RefreshToken)
+	respondJSON(w, http.StatusOK, loginResponse(result))
+}
+
+// setSessionCookies sets the httpOnly refresh cookie (for the backend) and a
+// JS-readable CSRF cookie (for double-submit CSRF protection on /auth/refresh).
+func setSessionCookies(w http.ResponseWriter, refreshToken string) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     refreshCookieName,
-		Value:    result.RefreshToken,
+		Value:    refreshToken,
 		Path:     "/auth",
 		HttpOnly: true,
 		Secure:   true,
 		SameSite: http.SameSiteStrictMode,
 		MaxAge:   refreshCookieMaxAge,
 	})
+	http.SetCookie(w, &http.Cookie{
+		Name:     csrfCookieName,
+		Value:    randomToken(),
+		Path:     "/auth",
+		HttpOnly: false, // frontend JS must read it to echo in X-CSRF-Token
+		Secure:   true,
+		SameSite: http.SameSiteStrictMode,
+		MaxAge:   refreshCookieMaxAge,
+	})
+}
 
-	respondJSON(w, http.StatusOK, map[string]any{
+func loginResponse(result *service.LoginResult) map[string]any {
+	return map[string]any{
 		"success": true,
 		"data": map[string]any{
 			"access_token": result.AccessToken,
@@ -68,7 +91,48 @@ func (a *Auth) Login(w http.ResponseWriter, r *http.Request) {
 				"role": result.User.Role,
 			},
 		},
-	})
+	}
+}
+
+func (a *Auth) Refresh(w http.ResponseWriter, r *http.Request) {
+	refresh, err := r.Cookie(refreshCookieName)
+	if err != nil {
+		respondError(w, http.StatusUnauthorized, "Invalid or expired refresh token", "INVALID_REFRESH_TOKEN", nil)
+		return
+	}
+
+	csrfCookie, err := r.Cookie(csrfCookieName)
+	csrfHeader := r.Header.Get(csrfHeaderName)
+	if err != nil || !constantTimeEqual(csrfCookie.Value, csrfHeader) {
+		respondError(w, http.StatusForbidden, "CSRF token mismatch", "CSRF_INVALID", nil)
+		return
+	}
+
+	result, err := a.svc.Refresh(r.Context(), refresh.Value)
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrInvalidRefreshToken):
+			respondError(w, http.StatusUnauthorized, "Invalid or expired refresh token", "INVALID_REFRESH_TOKEN", nil)
+		case errors.Is(err, service.ErrInactiveAccount):
+			respondError(w, http.StatusForbidden, "Account is inactive", "ACCOUNT_INACTIVE", nil)
+		default:
+			respondError(w, http.StatusInternalServerError, "Internal server error", "INTERNAL_ERROR", nil)
+		}
+		return
+	}
+
+	setSessionCookies(w, result.RefreshToken)
+	respondJSON(w, http.StatusOK, loginResponse(result))
+}
+
+func constantTimeEqual(a, b string) bool {
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
+}
+
+func randomToken() string {
+	b := make([]byte, 32)
+	_, _ = rand.Read(b)
+	return base64.RawURLEncoding.EncodeToString(b)
 }
 
 type registerRequest struct {

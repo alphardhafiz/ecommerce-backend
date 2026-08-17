@@ -40,6 +40,17 @@ func (r *UserRepo) Create(ctx context.Context, name, email, passwordHash string)
 	return u, nil
 }
 
+func (r *UserRepo) FindByID(ctx context.Context, id string) (*model.User, error) {
+	row := r.pool.QueryRow(ctx,
+		`SELECT `+userColumns+` FROM users WHERE id = $1`, id)
+
+	u, err := scanUser(row)
+	if err != nil {
+		return nil, mapUserError(err)
+	}
+	return u, nil
+}
+
 func (r *UserRepo) FindByEmail(ctx context.Context, email string) (*model.User, error) {
 	row := r.pool.QueryRow(ctx,
 		`SELECT `+userColumns+` FROM users WHERE email = $1`, email)

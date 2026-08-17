@@ -1,8 +1,61 @@
 package service
 
 import (
+	"context"
+	"errors"
+	"os"
 	"testing"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	jwtpkg "ecommerce/server/internal/jwt"
+	"ecommerce/server/internal/repository"
 )
+
+func newAuthSvc(t *testing.T) (*AuthService, *pgxpool.Pool) {
+	t.Helper()
+	url := os.Getenv("DATABASE_URL")
+	if url == "" {
+		t.Skip("DATABASE_URL not set, skipping auth service DB test")
+	}
+	pool, err := pgxpool.New(context.Background(), url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	jwtHelper := jwtpkg.New("test-secret", jwtpkg.DefaultTTL)
+	return NewAuthService(repository.NewUserRepo(pool), repository.NewRefreshTokenRepo(pool), jwtHelper), pool
+}
+
+func TestAuthServiceRefreshReuse(t *testing.T) {
+	svc, pool := newAuthSvc(t)
+	ctx := context.Background()
+	email := "svc-refresh-reuse@example.com"
+	pool.Exec(ctx, `DELETE FROM users WHERE email = $1`, email)
+	defer pool.Exec(ctx, `DELETE FROM users WHERE email = $1`, email)
+
+	if _, err := svc.Register(ctx, "Budi", email, "abc12345", "abc12345"); err != nil {
+		t.Fatal(err)
+	}
+	login, err := svc.Login(ctx, email, "abc12345")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// First refresh succeeds (rotation).
+	refreshed, err := svc.Refresh(ctx, login.RefreshToken)
+	if err != nil {
+		t.Fatalf("first refresh failed: %v", err)
+	}
+	if refreshed.RefreshToken == login.RefreshToken {
+		t.Error("refresh token should be rotated")
+	}
+
+	// Reusing the old (already rotated) token must fail uniformly.
+	if _, err := svc.Refresh(ctx, login.RefreshToken); !errors.Is(err, ErrInvalidRefreshToken) {
+		t.Fatalf("reuse error = %v, want ErrInvalidRefreshToken", err)
+	}
+}
 
 func TestRegisterValidation(t *testing.T) {
 	tests := []struct {
