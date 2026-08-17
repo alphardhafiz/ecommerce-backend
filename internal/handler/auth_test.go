@@ -22,6 +22,15 @@ import (
 	"ecommerce/server/internal/service"
 )
 
+type fakeMailer struct {
+	sentTo []string
+}
+
+func (f *fakeMailer) SendPasswordReset(to, resetLink string) error {
+	f.sentTo = append(f.sentTo, to)
+	return nil
+}
+
 func newAuth(t *testing.T) (*Auth, *pgxpool.Pool) {
 	t.Helper()
 	url := os.Getenv("DATABASE_URL")
@@ -34,7 +43,15 @@ func newAuth(t *testing.T) (*Auth, *pgxpool.Pool) {
 	}
 	t.Cleanup(pool.Close)
 	jwtHelper := jwtpkg.New("test-secret", jwtpkg.DefaultTTL)
-	return NewAuth(service.NewAuthService(repository.NewUserRepo(pool), repository.NewRefreshTokenRepo(pool), jwtHelper)), pool
+	authSvc := service.NewAuthService(
+		repository.NewUserRepo(pool),
+		repository.NewRefreshTokenRepo(pool),
+		repository.NewPasswordResetTokenRepo(pool),
+		jwtHelper,
+		&fakeMailer{},
+		"http://localhost:3000",
+	)
+	return NewAuth(authSvc), pool
 }
 
 func postRegister(t *testing.T, h *Auth, body string) *httptest.ResponseRecorder {
@@ -391,6 +408,119 @@ func TestLogoutCSRFMismatch(t *testing.T) {
 		hashToken(t, refresh)).Scan(&revoked)
 	if revoked {
 		t.Error("refresh token should not be revoked on CSRF failure")
+	}
+}
+
+func postForgotPassword(t *testing.T, h *Auth, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/auth/forgot-password", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ForgotPassword(rec, req)
+	return rec
+}
+
+func newAuthWithMailer(t *testing.T, mailer *fakeMailer) (*Auth, *pgxpool.Pool) {
+	t.Helper()
+	url := os.Getenv("DATABASE_URL")
+	if url == "" {
+		t.Skip("DATABASE_URL not set, skipping auth handler test")
+	}
+	pool, err := pgxpool.New(context.Background(), url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	jwtHelper := jwtpkg.New("test-secret", jwtpkg.DefaultTTL)
+	authSvc := service.NewAuthService(
+		repository.NewUserRepo(pool),
+		repository.NewRefreshTokenRepo(pool),
+		repository.NewPasswordResetTokenRepo(pool),
+		jwtHelper,
+		mailer,
+		"http://localhost:3000",
+	)
+	return NewAuth(authSvc), pool
+}
+
+func TestForgotPasswordRegistered(t *testing.T) {
+	mailer := &fakeMailer{}
+	h, pool := newAuthWithMailer(t, mailer)
+	email := "forgot-registered@example.com"
+	seedUser(t, pool, email, "abc12345", "active")
+	defer pool.Exec(context.Background(), `DELETE FROM users WHERE email = $1`, email)
+
+	rec := postForgotPassword(t, h, `{"email":"`+email+`"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "reset link has been sent") {
+		t.Errorf("body = %s, want generic success message", rec.Body.String())
+	}
+
+	// Reset token stored as hash, expires ~30 min.
+	var storedHash string
+	var expiresAt time.Time
+	err := pool.QueryRow(context.Background(),
+		`SELECT token_hash, expires_at FROM password_reset_tokens prt JOIN users u ON u.id = prt.user_id WHERE u.email = $1`,
+		email).Scan(&storedHash, &expiresAt)
+	if err != nil {
+		t.Fatalf("reset token not stored: %v", err)
+	}
+	if storedHash == "" || len(storedHash) != 64 {
+		t.Errorf("storedHash = %q, want SHA-256 hex", storedHash)
+	}
+	if ttl := time.Until(expiresAt); ttl < 29*time.Minute || ttl > 30*time.Minute {
+		t.Errorf("expires_at = %v, want ~30 minutes", ttl)
+	}
+
+	// Mail sent to the right address (async, so wait briefly).
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && len(mailer.sentTo) == 0 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(mailer.sentTo) != 1 || mailer.sentTo[0] != email {
+		t.Errorf("mailer.sentTo = %v, want [%s]", mailer.sentTo, email)
+	}
+}
+
+func TestForgotPasswordUnregistered(t *testing.T) {
+	mailer := &fakeMailer{}
+	h, pool := newAuthWithMailer(t, mailer)
+	email := "forgot-nonexistent@example.com"
+
+	rec := postForgotPassword(t, h, `{"email":"`+email+`"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (same as registered)", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "reset link has been sent") {
+		t.Errorf("body = %s, want identical generic message", rec.Body.String())
+	}
+	// No token, no email sent.
+	var n int
+	pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM password_reset_tokens WHERE user_id = (SELECT id FROM users WHERE email = $1)`,
+		email).Scan(&n)
+	if n != 0 {
+		t.Errorf("token count = %d, want 0", n)
+	}
+	deadline := time.Now().Add(200 * time.Millisecond)
+	for time.Now().Before(deadline) && len(mailer.sentTo) == 0 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(mailer.sentTo) != 0 {
+		t.Errorf("mailer.sentTo = %v, want none sent", mailer.sentTo)
+	}
+}
+
+func TestForgotPasswordInvalidEmail(t *testing.T) {
+	h, _ := newAuth(t)
+	rec := postForgotPassword(t, h, `{"email":"not-an-email"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "VALIDATION_ERROR") {
+		t.Errorf("body = %s, want VALIDATION_ERROR", rec.Body.String())
 	}
 }
 

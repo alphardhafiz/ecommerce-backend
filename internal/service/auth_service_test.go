@@ -12,6 +12,15 @@ import (
 	"ecommerce/server/internal/repository"
 )
 
+type fakeMailer struct {
+	sentTo []string
+}
+
+func (f *fakeMailer) SendPasswordReset(to, resetLink string) error {
+	f.sentTo = append(f.sentTo, to)
+	return nil
+}
+
 func newAuthSvc(t *testing.T) (*AuthService, *pgxpool.Pool) {
 	t.Helper()
 	url := os.Getenv("DATABASE_URL")
@@ -24,7 +33,15 @@ func newAuthSvc(t *testing.T) (*AuthService, *pgxpool.Pool) {
 	}
 	t.Cleanup(pool.Close)
 	jwtHelper := jwtpkg.New("test-secret", jwtpkg.DefaultTTL)
-	return NewAuthService(repository.NewUserRepo(pool), repository.NewRefreshTokenRepo(pool), jwtHelper), pool
+	svc := NewAuthService(
+		repository.NewUserRepo(pool),
+		repository.NewRefreshTokenRepo(pool),
+		repository.NewPasswordResetTokenRepo(pool),
+		jwtHelper,
+		&fakeMailer{},
+		"http://localhost:3000",
+	)
+	return svc, pool
 }
 
 func TestAuthServiceRefreshReuse(t *testing.T) {

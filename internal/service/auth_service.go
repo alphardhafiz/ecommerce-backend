@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"log/slog"
 	"net/mail"
 	"strings"
 	"time"
@@ -24,6 +25,7 @@ const (
 	accessTokenTTL    = 15 * time.Minute
 	refreshTokenTTL   = 7 * 24 * time.Hour
 	refreshTokenBytes = 32
+	resetTokenTTL     = 30 * time.Minute
 )
 
 var (
@@ -43,14 +45,28 @@ type ValidationError struct {
 
 func (e *ValidationError) Error() string { return "validation failed" }
 
-type AuthService struct {
-	users         *repository.UserRepo
-	refreshTokens *repository.RefreshTokenRepo
-	jwt           *jwtpkg.Helper
+type PasswordResetMailer interface {
+	SendPasswordReset(to, resetLink string) error
 }
 
-func NewAuthService(users *repository.UserRepo, refreshTokens *repository.RefreshTokenRepo, jwt *jwtpkg.Helper) *AuthService {
-	return &AuthService{users: users, refreshTokens: refreshTokens, jwt: jwt}
+type AuthService struct {
+	users          *repository.UserRepo
+	refreshTokens  *repository.RefreshTokenRepo
+	passwordResets *repository.PasswordResetTokenRepo
+	jwt            *jwtpkg.Helper
+	mailer         PasswordResetMailer
+	frontendURL    string
+}
+
+func NewAuthService(users *repository.UserRepo, refreshTokens *repository.RefreshTokenRepo, passwordResets *repository.PasswordResetTokenRepo, jwt *jwtpkg.Helper, mailer PasswordResetMailer, frontendURL string) *AuthService {
+	return &AuthService{
+		users:          users,
+		refreshTokens:  refreshTokens,
+		passwordResets: passwordResets,
+		jwt:            jwt,
+		mailer:         mailer,
+		frontendURL:    frontendURL,
+	}
 }
 
 type LoginResult struct {
@@ -165,6 +181,37 @@ func (s *AuthService) Refresh(ctx context.Context, rawRefreshToken string) (*Log
 		RefreshToken: newRaw,
 		User:         user,
 	}, nil
+}
+
+func (s *AuthService) ForgotPassword(ctx context.Context, email string) error {
+	user, err := s.users.FindByEmail(ctx, strings.ToLower(strings.TrimSpace(email)))
+	if err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			// Same response regardless: prevent user enumeration.
+			return nil
+		}
+		return err
+	}
+
+	tokenBytes, err := randomBytes(refreshTokenBytes)
+	if err != nil {
+		return err
+	}
+	rawToken := base64.RawURLEncoding.EncodeToString(tokenBytes)
+	hash := sha256.Sum256(tokenBytes)
+	if err := s.passwordResets.Create(ctx, user.ID, hex.EncodeToString(hash[:]), time.Now().Add(resetTokenTTL)); err != nil {
+		return err
+	}
+
+	resetLink := s.frontendURL + "/reset-password?token=" + rawToken
+	// Async fire-and-forget: never block the response on Resend, so the
+	// endpoint stays fast and timing can't reveal whether the email exists.
+	go func() {
+		if err := s.mailer.SendPasswordReset(user.Email, resetLink); err != nil {
+			slog.Error("send reset email failed", "user_id", user.ID, "error", err)
+		}
+	}()
+	return nil
 }
 
 func (s *AuthService) Register(ctx context.Context, name, email, password, confirmPassword string) (*model.User, error) {

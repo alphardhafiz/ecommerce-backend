@@ -14,6 +14,7 @@ import (
 	"ecommerce/server/internal/database"
 	"ecommerce/server/internal/handler"
 	jwtpkg "ecommerce/server/internal/jwt"
+	"ecommerce/server/internal/mail"
 	"ecommerce/server/internal/middleware"
 	"ecommerce/server/internal/repository"
 	"ecommerce/server/internal/service"
@@ -53,8 +54,10 @@ func main() {
 
 	userRepo := repository.NewUserRepo(pool)
 	refreshTokenRepo := repository.NewRefreshTokenRepo(pool)
+	passwordResetTokenRepo := repository.NewPasswordResetTokenRepo(pool)
 	jwtHelper := jwtpkg.New(cfg.JWTSecret, jwtpkg.DefaultTTL)
-	authSvc := service.NewAuthService(userRepo, refreshTokenRepo, jwtHelper)
+	mailClient := mail.New(cfg.ResendAPIKey, cfg.ResendFromEmail)
+	authSvc := service.NewAuthService(userRepo, refreshTokenRepo, passwordResetTokenRepo, jwtHelper, mailClient, cfg.FrontendURL)
 	auth := handler.NewAuth(authSvc)
 
 	mux := http.NewServeMux()
@@ -64,6 +67,7 @@ func main() {
 	mux.HandleFunc("POST /auth/login", auth.Login)
 	mux.HandleFunc("POST /auth/refresh", auth.Refresh)
 	mux.HandleFunc("POST /auth/logout", auth.Logout)
+	mux.HandleFunc("POST /auth/forgot-password", auth.ForgotPassword)
 
 	server := &http.Server{
 		Addr:    ":" + cfg.Port,

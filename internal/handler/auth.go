@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/mail"
 
 	"ecommerce/server/internal/repository"
 	"ecommerce/server/internal/service"
@@ -167,6 +168,34 @@ func randomToken() string {
 	b := make([]byte, 32)
 	_, _ = rand.Read(b)
 	return base64.RawURLEncoding.EncodeToString(b)
+}
+
+type forgotPasswordRequest struct {
+	Email string `json:"email"`
+}
+
+func (a *Auth) ForgotPassword(w http.ResponseWriter, r *http.Request) {
+	var req forgotPasswordRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid request body", "INVALID_REQUEST", nil)
+		return
+	}
+	if _, err := mail.ParseAddress(req.Email); err != nil {
+		respondError(w, http.StatusBadRequest, "Validation failed", "VALIDATION_ERROR", []map[string]string{{"field": "email", "message": "Email is not valid"}})
+		return
+	}
+
+	if err := a.svc.ForgotPassword(r.Context(), req.Email); err != nil {
+		respondError(w, http.StatusInternalServerError, "Internal server error", "INTERNAL_ERROR", nil)
+		return
+	}
+
+	respondJSON(w, http.StatusOK, map[string]any{
+		"success": true,
+		"data": map[string]any{
+			"message": "If the email is registered, a reset link has been sent",
+		},
+	})
 }
 
 type registerRequest struct {
