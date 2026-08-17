@@ -14,6 +14,8 @@ import (
 	"ecommerce/server/internal/database"
 	"ecommerce/server/internal/handler"
 	"ecommerce/server/internal/middleware"
+	"ecommerce/server/internal/repository"
+	"ecommerce/server/internal/service"
 	"ecommerce/server/pkg/logger"
 )
 
@@ -48,9 +50,14 @@ func main() {
 
 	health := handler.NewHealth(pool, redisCache)
 
+	userRepo := repository.NewUserRepo(pool)
+	authSvc := service.NewAuthService(userRepo)
+	auth := handler.NewAuth(authSvc)
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", health.Liveness)
 	mux.HandleFunc("GET /health/ready", health.Readiness)
+	mux.HandleFunc("POST /auth/register", auth.Register)
 
 	server := &http.Server{
 		Addr:    ":" + cfg.Port,

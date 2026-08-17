@@ -6,7 +6,7 @@ type User struct {
 	ID           string
 	Name         string
 	Email        string
-	PasswordHash string
+	PasswordHash string `json:"-"`
 	Role         string
 	Status       string
 	Phone        *string

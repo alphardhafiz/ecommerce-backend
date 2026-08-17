@@ -29,7 +29,7 @@ Pecahan task per fase mengikuti PRD §U (Development Roadmap). Sumber kebenaran:
 
 - [x] Repository `users` (create, find by email, update)
 - [x] JWT helper (HS256, claims `user_id`/`role`/`jti`, exp 15m) + validator
-- [ ] `POST /auth/register` (bcrypt cost 12, validasi email/password)
+- [x] `POST /auth/register` (bcrypt cost 12, validasi email/password)
 - [ ] `POST /auth/login` (access token di body, refresh token httpOnly cookie)
 - [ ] `POST /auth/refresh` (rotation + reuse detection → revoke semua sesi + CSRF double-submit)
 - [ ] `POST /auth/logout` (revoke refresh token, hapus cookie)
