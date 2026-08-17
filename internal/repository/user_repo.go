@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -76,6 +77,55 @@ func (r *UserRepo) Update(ctx context.Context, id, name string, phone *string) (
 		 WHERE id = $1
 		 RETURNING `+userColumns,
 		id, name, phone)
+
+	u, err := scanUser(row)
+	if err != nil {
+		return nil, mapUserError(err)
+	}
+	return u, nil
+}
+
+// List returns users filtered by status (empty = all) with pagination and the
+// total count matching the filter.
+func (r *UserRepo) List(ctx context.Context, status string, limit, offset int) ([]*model.User, int64, error) {
+	where := ""
+	args := []any{}
+	if status != "" {
+		args = append(args, status)
+		where = "WHERE status = $1"
+	}
+
+	var total int64
+	if err := r.pool.QueryRow(ctx, `SELECT count(*) FROM users `+where, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	args = append(args, limit, offset)
+	query := fmt.Sprintf(`SELECT `+userColumns+` FROM users %s ORDER BY created_at DESC LIMIT $%d OFFSET $%d`, where, len(args)-1, len(args))
+	rows, err := r.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	var users []*model.User
+	for rows.Next() {
+		u, err := scanUser(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		users = append(users, u)
+	}
+	return users, total, rows.Err()
+}
+
+func (r *UserRepo) UpdateStatus(ctx context.Context, id, status string) (*model.User, error) {
+	row := r.pool.QueryRow(ctx,
+		`UPDATE users
+		 SET status = $2, updated_at = now()
+		 WHERE id = $1
+		 RETURNING `+userColumns,
+		id, status)
 
 	u, err := scanUser(row)
 	if err != nil {

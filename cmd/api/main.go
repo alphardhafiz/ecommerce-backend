@@ -59,7 +59,8 @@ func main() {
 	mailClient := mail.New(cfg.ResendAPIKey, cfg.ResendFromEmail)
 	authSvc := service.NewAuthService(userRepo, refreshTokenRepo, passwordResetTokenRepo, jwtHelper, mailClient, cfg.FrontendURL)
 	auth := handler.NewAuth(authSvc)
-	userHandler := handler.NewUser(userRepo)
+	userSvc := service.NewUserService(userRepo)
+	userHandler := handler.NewUser(userSvc)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", health.Liveness)
@@ -72,6 +73,11 @@ func main() {
 	mux.HandleFunc("POST /auth/reset-password", auth.ResetPassword)
 	mux.Handle("GET /users/me", middleware.RequireAuth(jwtHelper)(http.HandlerFunc(userHandler.Me)))
 	mux.Handle("PATCH /users/me", middleware.RequireAuth(jwtHelper)(http.HandlerFunc(userHandler.UpdateMe)))
+	adminRequired := func(next http.Handler) http.Handler {
+		return middleware.RequireAuth(jwtHelper)(middleware.RequireRole("admin")(next))
+	}
+	mux.Handle("GET /admin/users", adminRequired(http.HandlerFunc(userHandler.ListUsers)))
+	mux.Handle("PATCH /admin/users/{id}/status", adminRequired(http.HandlerFunc(userHandler.UpdateUserStatus)))
 
 	server := &http.Server{
 		Addr:    ":" + cfg.Port,

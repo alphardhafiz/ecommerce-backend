@@ -37,7 +37,7 @@ Pecahan task per fase mengikuti PRD §U (Development Roadmap). Sumber kebenaran:
 - [x] `POST /auth/reset-password` (invalidate token + semua refresh token user)
 - [x] Middleware `RequireAuth` + `RequireRole("admin")`
 - [x] `GET /users/me`, `PATCH /users/me` (tanpa field `role` dari body)
-- [ ] `GET /admin/users`, `PATCH /admin/users/:id/status`
+- [x] `GET /admin/users`, `PATCH /admin/users/:id/status`
 - [ ] Test: auth_service unit (termasuk refresh reuse detection, reset revoke semua sesi)
 
 **DoD (PRD §U.2):** semua endpoint `/auth/*` berfungsi, middleware role-check teruji.
