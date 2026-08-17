@@ -38,7 +38,7 @@ Pecahan task per fase mengikuti PRD §U (Development Roadmap). Sumber kebenaran:
 - [x] Middleware `RequireAuth` + `RequireRole("admin")`
 - [x] `GET /users/me`, `PATCH /users/me` (tanpa field `role` dari body)
 - [x] `GET /admin/users`, `PATCH /admin/users/:id/status`
-- [ ] Test: auth_service unit (termasuk refresh reuse detection, reset revoke semua sesi)
+- [x] Test: auth_service unit (termasuk refresh reuse detection, reset revoke semua sesi)
 
 **DoD (PRD §U.2):** semua endpoint `/auth/*` berfungsi, middleware role-check teruji.
 

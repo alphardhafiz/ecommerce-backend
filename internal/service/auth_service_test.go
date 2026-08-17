@@ -3,8 +3,10 @@ package service
 import (
 	"context"
 	"errors"
+	"net/url"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -13,11 +15,15 @@ import (
 )
 
 type fakeMailer struct {
-	sentTo []string
+	links chan string
+}
+
+func newFakeMailer() *fakeMailer {
+	return &fakeMailer{links: make(chan string, 1)}
 }
 
 func (f *fakeMailer) SendPasswordReset(to, resetLink string) error {
-	f.sentTo = append(f.sentTo, to)
+	f.links <- resetLink
 	return nil
 }
 
@@ -38,7 +44,7 @@ func newAuthSvc(t *testing.T) (*AuthService, *pgxpool.Pool) {
 		repository.NewRefreshTokenRepo(pool),
 		repository.NewPasswordResetTokenRepo(pool),
 		jwtHelper,
-		&fakeMailer{},
+		newFakeMailer(),
 		"http://localhost:3000",
 	)
 	return svc, pool
@@ -101,4 +107,101 @@ func TestRegisterValidation(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestAuthServiceRefreshReuseRevokesAllSessions(t *testing.T) {
+	svc, pool := newAuthSvc(t)
+	ctx := context.Background()
+	email := "svc-refresh-reuse-multi@example.com"
+	pool.Exec(ctx, `DELETE FROM users WHERE email = $1`, email)
+	defer pool.Exec(ctx, `DELETE FROM users WHERE email = $1`, email)
+
+	if _, err := svc.Register(ctx, "Budi", email, "abc12345", "abc12345"); err != nil {
+		t.Fatal(err)
+	}
+	deviceA, err := svc.Login(ctx, email, "abc12345")
+	if err != nil {
+		t.Fatal(err)
+	}
+	deviceB, err := svc.Login(ctx, email, "abc12345")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Rotate device A once (device B token untouched so far).
+	if _, err := svc.Refresh(ctx, deviceA.RefreshToken); err != nil {
+		t.Fatal(err)
+	}
+
+	// Reusing device A's already-rotated token must revoke ALL sessions.
+	if _, err := svc.Refresh(ctx, deviceA.RefreshToken); !errors.Is(err, ErrInvalidRefreshToken) {
+		t.Fatalf("reuse error = %v, want ErrInvalidRefreshToken", err)
+	}
+	// Device B was never rotated; if reuse truly revokes all sessions,
+	// its original token must now be rejected too.
+	if _, err := svc.Refresh(ctx, deviceB.RefreshToken); !errors.Is(err, ErrInvalidRefreshToken) {
+		t.Errorf("device B after reuse = %v, want ErrInvalidRefreshToken (all sessions revoked)", err)
+	}
+}
+
+func TestAuthServiceResetPasswordRevokesAllSessions(t *testing.T) {
+	svc, pool := newAuthSvc(t)
+	ctx := context.Background()
+	email := "svc-reset-revoke@example.com"
+	pool.Exec(ctx, `DELETE FROM users WHERE email = $1`, email)
+	defer pool.Exec(ctx, `DELETE FROM users WHERE email = $1`, email)
+
+	if _, err := svc.Register(ctx, "Budi", email, "abc12345", "abc12345"); err != nil {
+		t.Fatal(err)
+	}
+	sess1, err := svc.Login(ctx, email, "abc12345")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess2, err := svc.Login(ctx, email, "abc12345")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mailer := svc.mailer.(*fakeMailer)
+	if err := svc.ForgotPassword(ctx, email); err != nil {
+		t.Fatal(err)
+	}
+
+	// ForgotPassword sends the mail async; wait for the reset link.
+	var link string
+	select {
+	case link = <-mailer.links:
+	case <-time.After(2 * time.Second):
+		t.Fatal("no reset email sent within 2s")
+	}
+	token := resetTokenFromLink(t, link)
+
+	if err := svc.ResetPassword(ctx, token, "xyz98765", "xyz98765"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Old password no longer valid, all refresh sessions revoked.
+	if _, err := svc.Login(ctx, email, "abc12345"); !errors.Is(err, ErrInvalidCredentials) {
+		t.Errorf("old password login = %v, want ErrInvalidCredentials", err)
+	}
+	if _, err := svc.Refresh(ctx, sess1.RefreshToken); !errors.Is(err, ErrInvalidRefreshToken) {
+		t.Errorf("session 1 = %v, want ErrInvalidRefreshToken", err)
+	}
+	if _, err := svc.Refresh(ctx, sess2.RefreshToken); !errors.Is(err, ErrInvalidRefreshToken) {
+		t.Errorf("session 2 = %v, want ErrInvalidRefreshToken", err)
+	}
+}
+
+func resetTokenFromLink(t *testing.T, resetLink string) string {
+	t.Helper()
+	u, err := url.Parse(resetLink)
+	if err != nil {
+		t.Fatalf("parse reset link %q: %v", resetLink, err)
+	}
+	token := u.Query().Get("token")
+	if token == "" {
+		t.Fatalf("reset link %q has no token", resetLink)
+	}
+	return token
 }
