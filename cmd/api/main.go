@@ -59,6 +59,7 @@ func main() {
 	mailClient := mail.New(cfg.ResendAPIKey, cfg.ResendFromEmail)
 	authSvc := service.NewAuthService(userRepo, refreshTokenRepo, passwordResetTokenRepo, jwtHelper, mailClient, cfg.FrontendURL)
 	auth := handler.NewAuth(authSvc)
+	userHandler := handler.NewUser(userRepo)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", health.Liveness)
@@ -69,6 +70,8 @@ func main() {
 	mux.HandleFunc("POST /auth/logout", auth.Logout)
 	mux.HandleFunc("POST /auth/forgot-password", auth.ForgotPassword)
 	mux.HandleFunc("POST /auth/reset-password", auth.ResetPassword)
+	mux.Handle("GET /users/me", middleware.RequireAuth(jwtHelper)(http.HandlerFunc(userHandler.Me)))
+	mux.Handle("PATCH /users/me", middleware.RequireAuth(jwtHelper)(http.HandlerFunc(userHandler.UpdateMe)))
 
 	server := &http.Server{
 		Addr:    ":" + cfg.Port,
