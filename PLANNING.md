@@ -32,7 +32,7 @@ Pecahan task per fase mengikuti PRD §U (Development Roadmap). Sumber kebenaran:
 - [x] `POST /auth/register` (bcrypt cost 12, validasi email/password)
 - [x] `POST /auth/login` (access token di body, refresh token httpOnly cookie)
 - [x] `POST /auth/refresh` (rotation + reuse detection → revoke semua sesi + CSRF double-submit)
-- [ ] `POST /auth/logout` (revoke refresh token, hapus cookie)
+- [x] `POST /auth/logout` (revoke refresh token, hapus cookie)
 - [ ] Integrasi Resend (`internal/mail`) + `POST /auth/forgot-password` (response generic, kirim email async)
 - [ ] `POST /auth/reset-password` (invalidate token + semua refresh token user)
 - [ ] Middleware `RequireAuth` + `RequireRole("admin")`

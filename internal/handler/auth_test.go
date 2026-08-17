@@ -294,6 +294,106 @@ func postRefresh(t *testing.T, h *Auth, refreshToken, csrfToken string) *httptes
 	return rec
 }
 
+func postLogout(t *testing.T, h *Auth, refreshToken, csrfToken string, setCSRFHeader bool) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/auth/logout", nil)
+	if refreshToken != "" {
+		req.AddCookie(&http.Cookie{Name: "refresh_token", Value: refreshToken})
+	}
+	if csrfToken != "" {
+		req.AddCookie(&http.Cookie{Name: "csrf_token", Value: csrfToken})
+	}
+	if setCSRFHeader && csrfToken != "" {
+		req.Header.Set("X-CSRF-Token", csrfToken)
+	}
+	rec := httptest.NewRecorder()
+	h.Logout(rec, req)
+	return rec
+}
+
+func TestLogoutSuccess(t *testing.T) {
+	h, pool := newAuth(t)
+	email := "logout-success@example.com"
+	seedUser(t, pool, email, "abc12345", "active")
+	defer pool.Exec(context.Background(), `DELETE FROM users WHERE email = $1`, email)
+
+	loginRec := postLogin(t, h, `{"email":"`+email+`","password":"abc12345"}`)
+	refresh := cookieByName(t, loginRec, "refresh_token").Value
+	csrf := cookieByName(t, loginRec, "csrf_token").Value
+
+	rec := postLogout(t, h, refresh, csrf, true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	}
+
+	// Token must be revoked.
+	var revoked bool
+	pool.QueryRow(context.Background(),
+		`SELECT revoked_at IS NOT NULL FROM refresh_tokens WHERE token_hash = $1`,
+		hashToken(t, refresh)).Scan(&revoked)
+	if !revoked {
+		t.Error("refresh token should be revoked after logout")
+	}
+
+	// Cookies must be cleared.
+	for _, name := range []string{"refresh_token", "csrf_token"} {
+		c := cookieByName(t, rec, name)
+		if c.Value != "" || c.MaxAge != -1 {
+			t.Errorf("cookie %s not cleared: value=%q maxAge=%d", name, c.Value, c.MaxAge)
+		}
+	}
+}
+
+func TestLogoutNoCookie(t *testing.T) {
+	h, _ := newAuth(t)
+	rec := postLogout(t, h, "", "whatever-csrf", true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want idempotent 200", rec.Code)
+	}
+}
+
+func TestLogoutUnknownToken(t *testing.T) {
+	h, _ := newAuth(t)
+	// Valid CSRF present, but the refresh token is unknown/revoked already.
+	rec := postLogout(t, h, "unknown-token", "csrf", true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want idempotent 200", rec.Code)
+	}
+}
+
+func TestLogoutCSRFMismatch(t *testing.T) {
+	h, pool := newAuth(t)
+	email := "logout-csrf@example.com"
+	seedUser(t, pool, email, "abc12345", "active")
+	defer pool.Exec(context.Background(), `DELETE FROM users WHERE email = $1`, email)
+
+	loginRec := postLogin(t, h, `{"email":"`+email+`","password":"abc12345"}`)
+	refresh := cookieByName(t, loginRec, "refresh_token").Value
+	csrf := cookieByName(t, loginRec, "csrf_token").Value
+
+	req := httptest.NewRequest(http.MethodPost, "/auth/logout", nil)
+	req.AddCookie(&http.Cookie{Name: "refresh_token", Value: refresh})
+	req.AddCookie(&http.Cookie{Name: "csrf_token", Value: csrf})
+	req.Header.Set("X-CSRF-Token", "attacker-chosen-value")
+	rec := httptest.NewRecorder()
+	h.Logout(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "CSRF_INVALID") {
+		t.Errorf("body = %s, want CSRF_INVALID", rec.Body.String())
+	}
+	// Token must NOT be revoked.
+	var revoked bool
+	pool.QueryRow(context.Background(),
+		`SELECT revoked_at IS NOT NULL FROM refresh_tokens WHERE token_hash = $1`,
+		hashToken(t, refresh)).Scan(&revoked)
+	if revoked {
+		t.Error("refresh token should not be revoked on CSRF failure")
+	}
+}
+
 func hashToken(t *testing.T, raw string) string {
 	t.Helper()
 	b, err := base64.RawURLEncoding.DecodeString(raw)

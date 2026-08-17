@@ -106,6 +106,18 @@ func randomBytes(n int) ([]byte, error) {
 	return b, nil
 }
 
+func (s *AuthService) Logout(ctx context.Context, rawRefreshToken string) error {
+	if rawRefreshToken == "" {
+		return nil
+	}
+	tokenBytes, err := base64.RawURLEncoding.DecodeString(rawRefreshToken)
+	if err != nil {
+		return nil
+	}
+	hash := sha256.Sum256(tokenBytes)
+	return s.refreshTokens.RevokeByHash(ctx, hex.EncodeToString(hash[:]))
+}
+
 func (s *AuthService) Refresh(ctx context.Context, rawRefreshToken string) (*LoginResult, error) {
 	tokenBytes, err := base64.RawURLEncoding.DecodeString(rawRefreshToken)
 	if err != nil {

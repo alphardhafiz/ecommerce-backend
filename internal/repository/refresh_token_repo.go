@@ -31,6 +31,15 @@ func (r *RefreshTokenRepo) Create(ctx context.Context, userID, tokenHash string,
 	return err
 }
 
+// RevokeByHash revokes a single refresh token. Revoking an already-revoked or
+// nonexistent token is a no-op (idempotent logout).
+func (r *RefreshTokenRepo) RevokeByHash(ctx context.Context, tokenHash string) error {
+	_, err := r.pool.Exec(ctx,
+		`UPDATE refresh_tokens SET revoked_at = now() WHERE token_hash = $1 AND revoked_at IS NULL`,
+		tokenHash)
+	return err
+}
+
 // Rotate atomically revokes the old token and inserts a new one, returning the
 // owning user's ID. If the old token was already revoked (reuse = likely
 // stolen), every active session of that user is revoked instead and

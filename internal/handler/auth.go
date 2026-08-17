@@ -125,6 +125,40 @@ func (a *Auth) Refresh(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusOK, loginResponse(result))
 }
 
+func (a *Auth) Logout(w http.ResponseWriter, r *http.Request) {
+	// CSRF double-submit (same as /auth/refresh): cookie-endpoint protection.
+	csrfCookie, err := r.Cookie(csrfCookieName)
+	csrfHeader := r.Header.Get(csrfHeaderName)
+	if err != nil || !constantTimeEqual(csrfCookie.Value, csrfHeader) {
+		respondError(w, http.StatusForbidden, "CSRF token mismatch", "CSRF_INVALID", nil)
+		return
+	}
+
+	if refresh, err := r.Cookie(refreshCookieName); err == nil {
+		if err := a.svc.Logout(r.Context(), refresh.Value); err != nil {
+			respondError(w, http.StatusInternalServerError, "Internal server error", "INTERNAL_ERROR", nil)
+			return
+		}
+	}
+
+	clearAuthCookies(w)
+	respondJSON(w, http.StatusOK, map[string]any{"success": true, "data": map[string]any{}})
+}
+
+func clearAuthCookies(w http.ResponseWriter) {
+	for _, name := range []string{refreshCookieName, csrfCookieName} {
+		http.SetCookie(w, &http.Cookie{
+			Name:     name,
+			Value:    "",
+			Path:     "/auth",
+			HttpOnly: name == refreshCookieName,
+			Secure:   true,
+			SameSite: http.SameSiteStrictMode,
+			MaxAge:   -1,
+		})
+	}
+}
+
 func constantTimeEqual(a, b string) bool {
 	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }
