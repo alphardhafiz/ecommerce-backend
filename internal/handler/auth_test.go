@@ -3,6 +3,7 @@ package handler
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -516,6 +517,151 @@ func TestForgotPasswordUnregistered(t *testing.T) {
 func TestForgotPasswordInvalidEmail(t *testing.T) {
 	h, _ := newAuth(t)
 	rec := postForgotPassword(t, h, `{"email":"not-an-email"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "VALIDATION_ERROR") {
+		t.Errorf("body = %s, want VALIDATION_ERROR", rec.Body.String())
+	}
+}
+
+func postResetPassword(t *testing.T, h *Auth, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/auth/reset-password", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ResetPassword(rec, req)
+	return rec
+}
+
+// createResetToken inserts a fresh reset token for the user and returns the raw
+// token (so tests can consume it), plus its DB hash.
+func createResetToken(t *testing.T, pool *pgxpool.Pool, email string) (raw, dbHash string) {
+	t.Helper()
+	rawBytes := make([]byte, 32)
+	rand.Read(rawBytes)
+	raw = base64.RawURLEncoding.EncodeToString(rawBytes)
+	sum := sha256.Sum256(rawBytes)
+	dbHash = hex.EncodeToString(sum[:])
+
+	var userID string
+	if err := pool.QueryRow(context.Background(), `SELECT id FROM users WHERE email = $1`, email).Scan(&userID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(context.Background(),
+		`INSERT INTO password_reset_tokens (user_id, token_hash, expires_at) VALUES ($1, $2, now() + interval '30 minutes')`,
+		userID, dbHash); err != nil {
+		t.Fatal(err)
+	}
+	return raw, dbHash
+}
+
+func TestResetPasswordSuccess(t *testing.T) {
+	h, pool := newAuth(t)
+	email := "reset-success@example.com"
+	seedUser(t, pool, email, "oldpass123", "active")
+	defer pool.Exec(context.Background(), `DELETE FROM users WHERE email = $1`, email)
+
+	// Existing session must be revoked after reset.
+	loginRec := postLogin(t, h, `{"email":"`+email+`","password":"oldpass123"}`)
+	oldRefresh := cookieByName(t, loginRec, "refresh_token").Value
+
+	rawToken, dbHash := createResetToken(t, pool, email)
+
+	rec := postResetPassword(t, h, `{"token":"`+rawToken+`","password":"newpass123","confirm_password":"newpass123"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	}
+
+	// Token marked used.
+	var usedAt *time.Time
+	if err := pool.QueryRow(context.Background(), `SELECT used_at FROM password_reset_tokens WHERE token_hash = $1`, dbHash).Scan(&usedAt); err != nil {
+		t.Fatal(err)
+	}
+	if usedAt == nil {
+		t.Error("reset token should be marked used")
+	}
+
+	// Old password fails, new password works.
+	if rec := postLogin(t, h, `{"email":"`+email+`","password":"oldpass123"}`); rec.Code != http.StatusUnauthorized {
+		t.Errorf("old password status = %d, want 401", rec.Code)
+	}
+	if rec := postLogin(t, h, `{"email":"`+email+`","password":"newpass123"}`); rec.Code != http.StatusOK {
+		t.Errorf("new password status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	}
+
+	// All refresh tokens revoked (force re-login all devices).
+	var revoked bool
+	pool.QueryRow(context.Background(),
+		`SELECT revoked_at IS NOT NULL FROM refresh_tokens WHERE token_hash = $1`,
+		hashToken(t, oldRefresh)).Scan(&revoked)
+	if !revoked {
+		t.Error("existing refresh token should be revoked after reset")
+	}
+}
+
+func TestResetPasswordUsedToken(t *testing.T) {
+	h, pool := newAuth(t)
+	email := "reset-used@example.com"
+	seedUser(t, pool, email, "oldpass123", "active")
+	defer pool.Exec(context.Background(), `DELETE FROM users WHERE email = $1`, email)
+
+	rawToken, _ := createResetToken(t, pool, email)
+
+	body := `{"token":"` + rawToken + `","password":"newpass123","confirm_password":"newpass123"}`
+	if rec := postResetPassword(t, h, body); rec.Code != http.StatusOK {
+		t.Fatalf("first reset status = %d, want 200", rec.Code)
+	}
+	// Second use must fail with the same error as unknown/expired.
+	rec := postResetPassword(t, h, body)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("second reset status = %d, want 400", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "INVALID_RESET_TOKEN") {
+		t.Errorf("body = %s, want INVALID_RESET_TOKEN", rec.Body.String())
+	}
+}
+
+func TestResetPasswordExpiredToken(t *testing.T) {
+	h, pool := newAuth(t)
+	email := "reset-expired@example.com"
+	seedUser(t, pool, email, "oldpass123", "active")
+	defer pool.Exec(context.Background(), `DELETE FROM users WHERE email = $1`, email)
+
+	rawBytes := make([]byte, 32)
+	rand.Read(rawBytes)
+	raw := base64.RawURLEncoding.EncodeToString(rawBytes)
+	sum := sha256.Sum256(rawBytes)
+	dbHash := hex.EncodeToString(sum[:])
+	var userID string
+	pool.QueryRow(context.Background(), `SELECT id FROM users WHERE email = $1`, email).Scan(&userID)
+	pool.Exec(context.Background(),
+		`INSERT INTO password_reset_tokens (user_id, token_hash, expires_at) VALUES ($1, $2, now() - interval '1 hour')`,
+		userID, dbHash)
+
+	rec := postResetPassword(t, h, `{"token":"`+raw+`","password":"newpass123","confirm_password":"newpass123"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "INVALID_RESET_TOKEN") {
+		t.Errorf("body = %s, want INVALID_RESET_TOKEN", rec.Body.String())
+	}
+}
+
+func TestResetPasswordUnknownToken(t *testing.T) {
+	h, _ := newAuth(t)
+	rec := postResetPassword(t, h, `{"token":"bogus-token","password":"newpass123","confirm_password":"newpass123"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "INVALID_RESET_TOKEN") {
+		t.Errorf("body = %s, want INVALID_RESET_TOKEN (same as used/expired)", rec.Body.String())
+	}
+}
+
+func TestResetPasswordInvalidPassword(t *testing.T) {
+	h, _ := newAuth(t)
+	rec := postResetPassword(t, h, `{"token":"whatever","password":"short","confirm_password":"short"}`)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", rec.Code)
 	}

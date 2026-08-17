@@ -32,6 +32,7 @@ var (
 	ErrInvalidCredentials  = errors.New("invalid credentials")
 	ErrInactiveAccount     = errors.New("account inactive")
 	ErrInvalidRefreshToken = errors.New("invalid refresh token")
+	ErrInvalidResetToken   = errors.New("invalid reset token")
 )
 
 type FieldError struct {
@@ -212,6 +213,47 @@ func (s *AuthService) ForgotPassword(ctx context.Context, email string) error {
 		}
 	}()
 	return nil
+}
+
+func (s *AuthService) ResetPassword(ctx context.Context, rawToken, password, confirmPassword string) error {
+	if verrs := validateNewPassword(password, confirmPassword); len(verrs) > 0 {
+		return &ValidationError{Errors: verrs}
+	}
+
+	tokenBytes, err := base64.RawURLEncoding.DecodeString(rawToken)
+	if err != nil {
+		return ErrInvalidResetToken
+	}
+	hash := sha256.Sum256(tokenBytes)
+
+	userID, err := s.passwordResets.Consume(ctx, hex.EncodeToString(hash[:]))
+	if err != nil {
+		if errors.Is(err, repository.ErrResetTokenInvalid) {
+			return ErrInvalidResetToken
+		}
+		return err
+	}
+
+	newHash, err := bcrypt.GenerateFromPassword([]byte(password), bcryptCost)
+	if err != nil {
+		return err
+	}
+	if err := s.users.UpdatePassword(ctx, userID, string(newHash)); err != nil {
+		return err
+	}
+	// Force re-login on all devices.
+	return s.refreshTokens.RevokeAllForUser(ctx, userID)
+}
+
+func validateNewPassword(password, confirmPassword string) []FieldError {
+	var verrs []FieldError
+	if len(password) < 8 || !hasLetterAndDigit(password) {
+		verrs = append(verrs, FieldError{"password", "Password must be at least 8 characters with letters and numbers"})
+	}
+	if password != confirmPassword {
+		verrs = append(verrs, FieldError{"confirm_password", "Passwords do not match"})
+	}
+	return verrs
 }
 
 func (s *AuthService) Register(ctx context.Context, name, email, password, confirmPassword string) (*model.User, error) {

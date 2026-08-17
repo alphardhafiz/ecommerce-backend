@@ -62,6 +62,13 @@ func (r *UserRepo) FindByEmail(ctx context.Context, email string) (*model.User, 
 	return u, nil
 }
 
+func (r *UserRepo) UpdatePassword(ctx context.Context, id, passwordHash string) error {
+	_, err := r.pool.Exec(ctx,
+		`UPDATE users SET password_hash = $2, updated_at = now() WHERE id = $1`,
+		id, passwordHash)
+	return err
+}
+
 func (r *UserRepo) Update(ctx context.Context, id, name string, phone *string) (*model.User, error) {
 	row := r.pool.QueryRow(ctx,
 		`UPDATE users

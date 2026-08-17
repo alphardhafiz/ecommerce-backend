@@ -40,6 +40,15 @@ func (r *RefreshTokenRepo) RevokeByHash(ctx context.Context, tokenHash string) e
 	return err
 }
 
+// RevokeAllForUser revokes every active refresh token of a user (force
+// re-login on all devices, e.g. after password reset).
+func (r *RefreshTokenRepo) RevokeAllForUser(ctx context.Context, userID string) error {
+	_, err := r.pool.Exec(ctx,
+		`UPDATE refresh_tokens SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL`,
+		userID)
+	return err
+}
+
 // Rotate atomically revokes the old token and inserts a new one, returning the
 // owning user's ID. If the old token was already revoked (reuse = likely
 // stolen), every active session of that user is revoked instead and

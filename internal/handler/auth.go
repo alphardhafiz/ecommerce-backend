@@ -198,6 +198,40 @@ func (a *Auth) ForgotPassword(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+type resetPasswordRequest struct {
+	Token           string `json:"token"`
+	Password        string `json:"password"`
+	ConfirmPassword string `json:"confirm_password"`
+}
+
+func (a *Auth) ResetPassword(w http.ResponseWriter, r *http.Request) {
+	var req resetPasswordRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid request body", "INVALID_REQUEST", nil)
+		return
+	}
+
+	err := a.svc.ResetPassword(r.Context(), req.Token, req.Password, req.ConfirmPassword)
+	if err != nil {
+		var verr *service.ValidationError
+		if errors.As(err, &verr) {
+			respondError(w, http.StatusBadRequest, "Validation failed", "VALIDATION_ERROR", verr.Errors)
+			return
+		}
+		if errors.Is(err, service.ErrInvalidResetToken) {
+			respondError(w, http.StatusBadRequest, "Invalid or expired reset token", "INVALID_RESET_TOKEN", nil)
+			return
+		}
+		respondError(w, http.StatusInternalServerError, "Internal server error", "INTERNAL_ERROR", nil)
+		return
+	}
+
+	respondJSON(w, http.StatusOK, map[string]any{
+		"success": true,
+		"data":    map[string]any{},
+	})
+}
+
 type registerRequest struct {
 	Name            string `json:"name"`
 	Email           string `json:"email"`

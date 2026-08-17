@@ -36,10 +36,10 @@ func (c *Client) SendPasswordReset(to, resetLink string) error {
 	}
 
 	payload := map[string]any{
-	"from":    c.from,
-	"to":      []string{to},
-	"subject": "Reset password",
-	"html": `
+		"from":    c.from,
+		"to":      []string{to},
+		"subject": "Reset password",
+		"html": `
 <!DOCTYPE html>
 <html lang="id">
 <head>
@@ -311,7 +311,7 @@ func (c *Client) SendPasswordReset(to, resetLink string) error {
 </body>
 </html>
 `,
-}
+	}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return err

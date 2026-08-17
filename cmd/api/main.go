@@ -68,6 +68,7 @@ func main() {
 	mux.HandleFunc("POST /auth/refresh", auth.Refresh)
 	mux.HandleFunc("POST /auth/logout", auth.Logout)
 	mux.HandleFunc("POST /auth/forgot-password", auth.ForgotPassword)
+	mux.HandleFunc("POST /auth/reset-password", auth.ResetPassword)
 
 	server := &http.Server{
 		Addr:    ":" + cfg.Port,
