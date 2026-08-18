@@ -24,11 +24,11 @@ import (
 )
 
 type fakeMailer struct {
-	sentTo []string
+	sent chan string
 }
 
 func (f *fakeMailer) SendPasswordReset(to, resetLink string) error {
-	f.sentTo = append(f.sentTo, to)
+	f.sent <- to
 	return nil
 }
 
@@ -445,7 +445,7 @@ func newAuthWithMailer(t *testing.T, mailer *fakeMailer) (*Auth, *pgxpool.Pool) 
 }
 
 func TestForgotPasswordRegistered(t *testing.T) {
-	mailer := &fakeMailer{}
+	mailer := &fakeMailer{sent: make(chan string, 1)}
 	h, pool := newAuthWithMailer(t, mailer)
 	email := "forgot-registered@example.com"
 	seedUser(t, pool, email, "abc12345", "active")
@@ -476,17 +476,18 @@ func TestForgotPasswordRegistered(t *testing.T) {
 	}
 
 	// Mail sent to the right address (async, so wait briefly).
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) && len(mailer.sentTo) == 0 {
-		time.Sleep(10 * time.Millisecond)
-	}
-	if len(mailer.sentTo) != 1 || mailer.sentTo[0] != email {
-		t.Errorf("mailer.sentTo = %v, want [%s]", mailer.sentTo, email)
+	select {
+	case to := <-mailer.sent:
+		if to != email {
+			t.Errorf("mailer sent to %q, want %q", to, email)
+		}
+	case <-time.After(2 * time.Second):
+		t.Error("mailer never sent the reset email")
 	}
 }
 
 func TestForgotPasswordUnregistered(t *testing.T) {
-	mailer := &fakeMailer{}
+	mailer := &fakeMailer{sent: make(chan string, 1)}
 	h, pool := newAuthWithMailer(t, mailer)
 	email := "forgot-nonexistent@example.com"
 
@@ -505,12 +506,10 @@ func TestForgotPasswordUnregistered(t *testing.T) {
 	if n != 0 {
 		t.Errorf("token count = %d, want 0", n)
 	}
-	deadline := time.Now().Add(200 * time.Millisecond)
-	for time.Now().Before(deadline) && len(mailer.sentTo) == 0 {
-		time.Sleep(10 * time.Millisecond)
-	}
-	if len(mailer.sentTo) != 0 {
-		t.Errorf("mailer.sentTo = %v, want none sent", mailer.sentTo)
+	select {
+	case to := <-mailer.sent:
+		t.Errorf("mailer unexpectedly sent to %q", to)
+	case <-time.After(200 * time.Millisecond):
 	}
 }
 

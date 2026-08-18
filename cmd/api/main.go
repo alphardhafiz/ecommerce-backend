@@ -61,6 +61,9 @@ func main() {
 	auth := handler.NewAuth(authSvc)
 	userSvc := service.NewUserService(userRepo)
 	userHandler := handler.NewUser(userSvc)
+	categoryRepo := repository.NewCategoryRepo(pool)
+	categorySvc := service.NewCategoryService(categoryRepo)
+	categoryHandler := handler.NewCategory(categorySvc)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", health.Liveness)
@@ -78,6 +81,10 @@ func main() {
 	}
 	mux.Handle("GET /admin/users", adminRequired(http.HandlerFunc(userHandler.ListUsers)))
 	mux.Handle("PATCH /admin/users/{id}/status", adminRequired(http.HandlerFunc(userHandler.UpdateUserStatus)))
+	mux.HandleFunc("GET /categories", categoryHandler.ListActive)
+	mux.Handle("POST /admin/categories", adminRequired(http.HandlerFunc(categoryHandler.Create)))
+	mux.Handle("PUT /admin/categories/{id}", adminRequired(http.HandlerFunc(categoryHandler.Update)))
+	mux.Handle("DELETE /admin/categories/{id}", adminRequired(http.HandlerFunc(categoryHandler.Delete)))
 
 	server := &http.Server{
 		Addr:    ":" + cfg.Port,
