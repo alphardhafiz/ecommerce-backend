@@ -72,11 +72,23 @@ func setSessionCookies(w http.ResponseWriter, refreshToken string) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     csrfCookieName,
 		Value:    randomToken(),
-		Path:     "/auth",
+		Path:     "/",   // root agar JS-readable dari halaman mana pun (double-submit)
 		HttpOnly: false, // frontend JS must read it to echo in X-CSRF-Token
 		Secure:   true,
 		SameSite: http.SameSiteStrictMode,
 		MaxAge:   refreshCookieMaxAge,
+	})
+	// Delete stale csrf_token at the old Path=/auth (same name, different
+	// path = separate cookie; both would be sent to /auth/* and r.Cookie
+	// would pick the wrong one).
+	http.SetCookie(w, &http.Cookie{
+		Name:     csrfCookieName,
+		Value:    "",
+		Path:     "/auth",
+		HttpOnly: false,
+		Secure:   true,
+		SameSite: http.SameSiteStrictMode,
+		MaxAge:   -1,
 	})
 }
 
@@ -151,13 +163,23 @@ func clearAuthCookies(w http.ResponseWriter) {
 		http.SetCookie(w, &http.Cookie{
 			Name:     name,
 			Value:    "",
-			Path:     "/auth",
+			Path:     "/auth", // csrf cookie dihapus juga di Path lama; Path baru "/" sama-sama dihapus di bawah
 			HttpOnly: name == refreshCookieName,
 			Secure:   true,
 			SameSite: http.SameSiteStrictMode,
 			MaxAge:   -1,
 		})
 	}
+	// csrf_token sekarang Path "/", hapus juga di Path itu.
+	http.SetCookie(w, &http.Cookie{
+		Name:     csrfCookieName,
+		Value:    "",
+		Path:     "/",
+		HttpOnly: false,
+		Secure:   true,
+		SameSite: http.SameSiteStrictMode,
+		MaxAge:   -1,
+	})
 }
 
 func constantTimeEqual(a, b string) bool {
