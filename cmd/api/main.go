@@ -64,6 +64,9 @@ func main() {
 	categoryRepo := repository.NewCategoryRepo(pool)
 	categorySvc := service.NewCategoryService(categoryRepo)
 	categoryHandler := handler.NewCategory(categorySvc)
+	productRepo := repository.NewProductRepo(pool)
+	productSvc := service.NewProductService(productRepo)
+	productHandler := handler.NewProduct(productSvc)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", health.Liveness)
@@ -85,6 +88,9 @@ func main() {
 	mux.Handle("POST /admin/categories", adminRequired(http.HandlerFunc(categoryHandler.Create)))
 	mux.Handle("PUT /admin/categories/{id}", adminRequired(http.HandlerFunc(categoryHandler.Update)))
 	mux.Handle("DELETE /admin/categories/{id}", adminRequired(http.HandlerFunc(categoryHandler.Delete)))
+	mux.Handle("POST /admin/products", adminRequired(http.HandlerFunc(productHandler.Create)))
+	mux.Handle("PUT /admin/products/{id}", adminRequired(http.HandlerFunc(productHandler.Update)))
+	mux.Handle("DELETE /admin/products/{id}", adminRequired(http.HandlerFunc(productHandler.Delete)))
 
 	server := &http.Server{
 		Addr:    ":" + cfg.Port,

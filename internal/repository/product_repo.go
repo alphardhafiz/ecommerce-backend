@@ -2,12 +2,16 @@ package repository
 
 import (
 	"context"
+	"errors"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"ecommerce/server/internal/model"
 )
+
+var ErrCategoryNotFound = errors.New("category does not exist")
 
 // productColumns casts price (NUMERIC) to bigint so it scans into int64
 // (whole rupiah) — money is never a float in Go (PRD D.2).
@@ -30,7 +34,7 @@ func (r *ProductRepo) Create(ctx context.Context, name string, description *stri
 
 	p, err := scanProduct(row)
 	if err != nil {
-		return nil, err
+		return nil, mapProductError(err)
 	}
 	return p, nil
 }
@@ -116,8 +120,12 @@ func scanProduct(row rowScanner) (*model.Product, error) {
 }
 
 func mapProductError(err error) error {
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrNotFound
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23503" {
+		return ErrCategoryNotFound
 	}
 	return err
 }
