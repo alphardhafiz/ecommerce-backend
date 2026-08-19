@@ -81,6 +81,10 @@ func (s *ProductService) List(ctx context.Context, f ProductListFilter) ([]*mode
 	})
 }
 
+func (s *ProductService) GetDetail(ctx context.Context, id string) (*model.Product, error) {
+	return s.products.FindPublicByID(ctx, id)
+}
+
 func (s *ProductService) validate(in ProductInput) error {
 	var errs []FieldError
 	if strings.TrimSpace(in.Name) == "" {

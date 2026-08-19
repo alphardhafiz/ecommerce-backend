@@ -105,6 +105,19 @@ func (p *Product) List(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (p *Product) Detail(w http.ResponseWriter, r *http.Request) {
+	product, err := p.svc.GetDetail(r.Context(), r.PathValue("id"))
+	if err != nil {
+		p.respondError(w, err)
+		return
+	}
+
+	respondJSON(w, http.StatusOK, map[string]any{
+		"success": true,
+		"data":    productDetailPayload(product),
+	})
+}
+
 func (p *Product) Create(w http.ResponseWriter, r *http.Request) {
 	req, ok := decodeProductRequest(w, r)
 	if !ok {
@@ -261,5 +274,37 @@ func productPublicPayload(p *model.Product) map[string]any {
 		"is_active":     p.IsActive,
 		"primary_image": nil,
 		"category":      category,
+	}
+}
+
+// productDetailPayload is the public detail shape (PRD C.3): full product with
+// category and all images.
+func productDetailPayload(p *model.Product) map[string]any {
+	var category map[string]any
+	if p.Category != nil && p.Category.ID != "" {
+		category = map[string]any{
+			"id":   p.Category.ID,
+			"name": p.Category.Name,
+		}
+	}
+	images := make([]map[string]any, 0, len(p.Images))
+	for _, img := range p.Images {
+		images = append(images, map[string]any{
+			"id":         img.ID,
+			"url":        img.URL,
+			"is_primary": img.IsPrimary,
+			"order":      img.DisplayOrder,
+		})
+	}
+	return map[string]any{
+		"id":          p.ID,
+		"name":        p.Name,
+		"description": p.Description,
+		"price":       p.Price,
+		"stock":       p.Stock,
+		"in_stock":    p.Stock > 0,
+		"is_active":   p.IsActive,
+		"category":    category,
+		"images":      images,
 	}
 }

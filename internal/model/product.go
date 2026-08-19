@@ -14,4 +14,5 @@ type Product struct {
 	DeletedAt   *time.Time
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
+	Images      []ProductImage
 }

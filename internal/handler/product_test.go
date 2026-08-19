@@ -675,3 +675,127 @@ func TestProductListPagination(t *testing.T) {
 		t.Errorf("pagination = %+v, want 2 per page, total>=5, pages>=3", body.Meta)
 	}
 }
+
+func seedProductImage(t *testing.T, pool *pgxpool.Pool, productID, url string, primary bool, order int) string {
+	t.Helper()
+	var id string
+	err := pool.QueryRow(context.Background(),
+		`INSERT INTO product_images (product_id, url, is_primary, display_order)
+		 VALUES ($1, $2, $3, $4) RETURNING id`, productID, url, primary, order).Scan(&id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+func productDetailRequest(t *testing.T, h *Product, id string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/products/"+id, nil)
+	req.SetPathValue("id", id)
+	rec := httptest.NewRecorder()
+	h.Detail(rec, req)
+	return rec
+}
+
+func TestProductDetailSuccess(t *testing.T) {
+	h, pool := newProductHandler(t)
+	catID := seedCategory(t, pool, "Pakaian", "pakaian")
+	defer pool.Exec(context.Background(), `DELETE FROM categories WHERE id = $1`, catID)
+
+	cat := &catID
+	prod := seedProduct(t, pool, "Kaos Detail", 89000, 15, cat)
+	defer pool.Exec(context.Background(), `DELETE FROM products WHERE id = $1`, prod.ID)
+
+	img1 := seedProductImage(t, pool, prod.ID, "https://img.example.com/1.jpg", true, 0)
+	img2 := seedProductImage(t, pool, prod.ID, "https://img.example.com/2.jpg", false, 1)
+	defer pool.Exec(context.Background(), `DELETE FROM product_images WHERE product_id = $1`, prod.ID)
+
+	rec := productDetailRequest(t, h, prod.ID)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	}
+
+	var body struct {
+		Success bool `json:"success"`
+		Data    struct {
+			ID       string `json:"id"`
+			Name     string `json:"name"`
+			Price    int64  `json:"price"`
+			Stock    int64  `json:"stock"`
+			InStock  bool   `json:"in_stock"`
+			Category struct {
+				ID   string `json:"id"`
+				Name string `json:"name"`
+			} `json:"category"`
+			Images []struct {
+				ID      string `json:"id"`
+				URL     string `json:"url"`
+				Primary bool   `json:"is_primary"`
+			} `json:"images"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if !body.Success || body.Data.ID != prod.ID || body.Data.Name != "Kaos Detail" || body.Data.Price != 89000 {
+		t.Errorf("body = %+v, want product detail", body.Data)
+	}
+	if body.Data.Stock != 15 || !body.Data.InStock {
+		t.Errorf("stock = %d in_stock=%v, want 15/true", body.Data.Stock, body.Data.InStock)
+	}
+	if body.Data.Category.ID != catID || body.Data.Category.Name != "Pakaian" {
+		t.Errorf("category = %+v, want Pakaian", body.Data.Category)
+	}
+	if len(body.Data.Images) != 2 {
+		t.Fatalf("images = %+v, want 2", body.Data.Images)
+	}
+	if body.Data.Images[0].ID != img1 || !body.Data.Images[0].Primary || body.Data.Images[0].URL != "https://img.example.com/1.jpg" {
+		t.Errorf("images[0] = %+v, want primary first", body.Data.Images[0])
+	}
+	if body.Data.Images[1].ID != img2 {
+		t.Errorf("images[1] = %+v, want second image", body.Data.Images[1])
+	}
+}
+
+func TestProductDetailNotFound(t *testing.T) {
+	h, _ := newProductHandler(t)
+	rec := productDetailRequest(t, h, "00000000-0000-0000-0000-000000000000")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "PRODUCT_NOT_FOUND") {
+		t.Errorf("body = %s, want PRODUCT_NOT_FOUND", rec.Body.String())
+	}
+}
+
+func TestProductDetailInactiveHidden(t *testing.T) {
+	h, pool := newProductHandler(t)
+	prod := seedProduct(t, pool, "Nonaktif", 10000, 5, nil)
+	defer pool.Exec(context.Background(), `DELETE FROM products WHERE id = $1`, prod.ID)
+
+	repo := repository.NewProductRepo(pool)
+	if _, err := repo.SetActive(context.Background(), prod.ID, false); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := productDetailRequest(t, h, prod.ID)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 (inactive product not public)", rec.Code)
+	}
+}
+
+func TestProductDetailSoftDeletedHidden(t *testing.T) {
+	h, pool := newProductHandler(t)
+	prod := seedProduct(t, pool, "Dihapus Detail", 10000, 5, nil)
+	defer pool.Exec(context.Background(), `DELETE FROM products WHERE id = $1`, prod.ID)
+
+	repo := repository.NewProductRepo(pool)
+	if err := repo.SoftDelete(context.Background(), prod.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := productDetailRequest(t, h, prod.ID)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 (soft-deleted product not public)", rec.Code)
+	}
+}

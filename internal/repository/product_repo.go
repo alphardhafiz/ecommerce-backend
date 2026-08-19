@@ -238,6 +238,41 @@ func scanPublicProduct(row rowScanner) (*model.Product, error) {
 	return p, nil
 }
 
+// FindPublicByID returns a non-deleted, active product with its category and
+// images. Returns ErrNotFound if the product is missing, inactive, or
+// soft-deleted (not visible publicly, PRD C.3).
+func (r *ProductRepo) FindPublicByID(ctx context.Context, id string) (*model.Product, error) {
+	row := r.pool.QueryRow(ctx,
+		`SELECT `+publicProductColumns+`
+		 FROM products p
+		 LEFT JOIN categories c ON c.id = p.category_id
+		 WHERE p.id = $1 AND p.deleted_at IS NULL AND p.is_active = true`, id)
+
+	p, err := scanPublicProduct(row)
+	if err != nil {
+		return nil, mapProductError(err)
+	}
+
+	rows, err := r.pool.Query(ctx,
+		`SELECT id, url, is_primary, display_order, created_at
+		 FROM product_images
+		 WHERE product_id = $1
+		 ORDER BY display_order, created_at`, id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var img model.ProductImage
+		if err := rows.Scan(&img.ID, &img.URL, &img.IsPrimary, &img.DisplayOrder, &img.CreatedAt); err != nil {
+			return nil, err
+		}
+		p.Images = append(p.Images, img)
+	}
+	return p, rows.Err()
+}
+
 func scanProduct(row rowScanner) (*model.Product, error) {
 	p := &model.Product{}
 	err := row.Scan(&p.ID, &p.CategoryID, &p.Name, &p.Description, &p.Price, &p.Stock, &p.IsActive, &p.DeletedAt, &p.CreatedAt, &p.UpdatedAt)
