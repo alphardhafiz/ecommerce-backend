@@ -38,22 +38,31 @@ func (c *Client) SendPasswordReset(to, resetLink string) error {
 	payload := map[string]any{
 		"from":    c.from,
 		"to":      []string{to},
-		"subject": "Reset password",
+		"subject": "Atur ulang password — Ledger & Tag",
 		"html": `
 <!DOCTYPE html>
 <html lang="id">
 <head>
 	<meta charset="UTF-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
-	<title>Reset Password</title>
+	<title>Atur Ulang Password</title>
 </head>
+
+<!--
+	Brand: Ledger & Tag (alat tulis kertas & kayu).
+	Token: paper #EDE8DC, paper-raised #F7F4EC, ink #161D1A, stamp #A63D2F,
+	taupe #B8AF9C, taupe-dark #6E6656, mustard #C98A2C.
+	Anti-pattern DESIGN §9: tanpa gradient, tanpa shadow tebal, radius kecil,
+	tanpa emoji di copy. Serif (Georgia) untuk display, sans (Arial) untuk body,
+	mono (Courier New) untuk label kecil.
+-->
 
 <body style="
 	margin: 0;
 	padding: 0;
-	background-color: #f4f6f8;
+	background-color: #EDE8DC;
 	font-family: Arial, Helvetica, sans-serif;
-	color: #1f2937;
+	color: #161D1A;
 ">
 
 <table
@@ -61,7 +70,7 @@ func (c *Client) SendPasswordReset(to, resetLink string) error {
 	cellpadding="0"
 	cellspacing="0"
 	border="0"
-	style="background-color: #f4f6f8; padding: 40px 16px;"
+	style="background-color: #EDE8DC; padding: 40px 16px;"
 >
 	<tr>
 		<td align="center">
@@ -74,10 +83,9 @@ func (c *Client) SendPasswordReset(to, resetLink string) error {
 				border="0"
 				style="
 					max-width: 560px;
-					background-color: #ffffff;
-					border-radius: 16px;
-					overflow: hidden;
-					box-shadow: 0 4px 20px rgba(0,0,0,0.06);
+					background-color: #F7F4EC;
+					border: 1px solid #B8AF9C;
+					border-radius: 4px;
 				"
 			>
 
@@ -86,134 +94,117 @@ func (c *Client) SendPasswordReset(to, resetLink string) error {
 					<td
 						align="center"
 						style="
-							padding: 32px 24px;
-							background-color: #111827;
+							padding: 32px 24px 24px;
+							background-color: #161D1A;
 						"
 					>
 						<div style="
-							font-size: 24px;
-							font-weight: 700;
-							color: #ffffff;
-							letter-spacing: -0.5px;
+							font-family: Georgia, 'Times New Roman', serif;
+							font-size: 26px;
+							color: #EDE8DC;
 						">
-							Your Store
+							Ledger <span style="font-style: italic;">&amp;</span> Tag
 						</div>
 
 						<div style="
 							margin-top: 8px;
-							font-size: 14px;
-							color: #9ca3af;
+							font-family: 'Courier New', Courier, monospace;
+							font-size: 11px;
+							letter-spacing: 0.06em;
+							color: #B8AF9C;
 						">
-							Keamanan akun Anda
+							ALAT TULIS KERTAS &amp; KAYU
 						</div>
 					</td>
 				</tr>
 
 				<!-- Content -->
 				<tr>
-					<td style="padding: 40px 40px 32px;">
-
-						<div style="
-							width: 56px;
-							height: 56px;
-							line-height: 56px;
-							text-align: center;
-							border-radius: 50%;
-							background-color: #eef2ff;
-							font-size: 26px;
-							margin-bottom: 24px;
-						">
-							🔐
-						</div>
+					<td style="padding: 32px 40px 8px;">
 
 						<h1 style="
 							margin: 0 0 16px;
+							font-family: Georgia, 'Times New Roman', serif;
 							font-size: 26px;
+							font-weight: normal;
 							line-height: 1.3;
-							color: #111827;
+							color: #161D1A;
 						">
-							Reset Password
+							Atur Ulang Password
 						</h1>
 
 						<p style="
 							margin: 0 0 16px;
 							font-size: 15px;
 							line-height: 1.7;
-							color: #4b5563;
+							color: #6E6656;
 						">
 							Kami menerima permintaan untuk mengatur ulang password
-							akun Anda.
+							akun Anda. Klik tombol di bawah untuk membuat password
+							baru.
 						</p>
 
-						<p style="
-							margin: 0 0 28px;
-							font-size: 15px;
-							line-height: 1.7;
-							color: #4b5563;
-						">
-							Klik tombol di bawah untuk membuat password baru.
-						</p>
+					</td>
+				</tr>
 
-						<!-- Button -->
-						<table
-							cellpadding="0"
-							cellspacing="0"
-							border="0"
-							width="100%"
+				<!-- Button -->
+				<tr>
+					<td align="center" style="padding: 16px 40px 8px;">
+						<a
+							href="` + resetLink + `"
+							style="
+								display: inline-block;
+								padding: 12px 28px;
+								background-color: #A63D2F;
+								color: #EDE8DC;
+								text-decoration: none;
+								font-size: 15px;
+								font-weight: 600;
+								border-radius: 4px;
+							"
 						>
-							<tr>
-								<td align="center">
-									<a
-										href="` + resetLink + `"
-										style="
-											display: inline-block;
-											padding: 14px 28px;
-											background-color: #4f46e5;
-											color: #ffffff;
-											text-decoration: none;
-											font-size: 15px;
-											font-weight: 600;
-											border-radius: 10px;
-										"
-									>
-										Reset Password
-									</a>
-								</td>
-							</tr>
-						</table>
+							Buat Password Baru
+						</a>
+					</td>
+				</tr>
 
-						<!-- Expiration Notice -->
+				<!-- Expiration Notice -->
+				<tr>
+					<td style="padding: 24px 40px 8px;">
 						<table
 							width="100%"
 							cellpadding="0"
 							cellspacing="0"
 							border="0"
 							style="
-								margin-top: 28px;
-								background-color: #fff7ed;
-								border-radius: 10px;
+								border: 1px solid #C98A2C;
+								border-radius: 4px;
 							"
 						>
 							<tr>
 								<td style="
-									padding: 16px;
+									padding: 12px 16px;
 									font-size: 13px;
 									line-height: 1.6;
-									color: #9a3412;
+									color: #6E6656;
 								">
-									<strong>⏱ Link berlaku selama 30 menit.</strong><br>
-									Setelah itu, Anda perlu meminta link reset password
-									baru.
+									<strong style="color: #161D1A;">Link berlaku selama 30 menit.</strong>
+									Setelah itu, minta link baru melalui halaman lupa
+									password.
 								</td>
 							</tr>
 						</table>
+					</td>
+				</tr>
 
-						<!-- Fallback Link -->
+				<!-- Fallback Link -->
+				<tr>
+					<td style="padding: 24px 40px 8px;">
 						<p style="
-							margin: 28px 0 8px;
+							margin: 0 0 8px;
 							font-size: 13px;
 							line-height: 1.6;
-							color: #6b7280;
+							color: #6E6656;
 						">
 							Jika tombol di atas tidak dapat digunakan, salin dan buka
 							link berikut di browser Anda:
@@ -228,29 +219,26 @@ func (c *Client) SendPasswordReset(to, resetLink string) error {
 							<a
 								href="` + resetLink + `"
 								style="
-									color: #4f46e5;
+									color: #A63D2F;
 									text-decoration: none;
 								"
 							>
 								` + resetLink + `
 							</a>
 						</p>
-
 					</td>
 				</tr>
 
-				<!-- Security Notice -->
+				<!-- Security Notice (dipisah garis perforasi) -->
 				<tr>
-					<td style="
-						padding: 0 40px 32px;
-					">
+					<td style="padding: 32px 40px 32px;">
 						<table
 							width="100%"
 							cellpadding="0"
 							cellspacing="0"
 							border="0"
 							style="
-								border-top: 1px solid #e5e7eb;
+								border-top: 1px dashed #B8AF9C;
 							"
 						>
 							<tr>
@@ -258,9 +246,9 @@ func (c *Client) SendPasswordReset(to, resetLink string) error {
 									padding-top: 24px;
 									font-size: 13px;
 									line-height: 1.6;
-									color: #6b7280;
+									color: #6E6656;
 								">
-									<strong style="color: #374151;">
+									<strong style="color: #161D1A;">
 										Bukan Anda yang meminta reset password?
 									</strong>
 									<br>
@@ -278,14 +266,13 @@ func (c *Client) SendPasswordReset(to, resetLink string) error {
 						align="center"
 						style="
 							padding: 24px;
-							background-color: #f9fafb;
-							border-top: 1px solid #f3f4f6;
+							border-top: 1px solid #B8AF9C;
 						"
 					>
 						<p style="
 							margin: 0;
 							font-size: 12px;
-							color: #9ca3af;
+							color: #6E6656;
 							line-height: 1.6;
 						">
 							Email ini dikirim secara otomatis. Mohon jangan membalas
@@ -294,10 +281,12 @@ func (c *Client) SendPasswordReset(to, resetLink string) error {
 
 						<p style="
 							margin: 8px 0 0;
-							font-size: 12px;
-							color: #9ca3af;
+							font-family: 'Courier New', Courier, monospace;
+							font-size: 11px;
+							letter-spacing: 0.04em;
+							color: #6E6656;
 						">
-							© 2026 Your Store. All rights reserved.
+							© 2026 LEDGER &amp; TAG — ALAT TULIS KERTAS &amp; KAYU
 						</p>
 					</td>
 				</tr>
