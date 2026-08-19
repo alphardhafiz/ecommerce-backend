@@ -3,6 +3,8 @@ package repository
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -138,6 +140,102 @@ func (r *ProductRepo) ListActive(ctx context.Context, limit, offset int) ([]*mod
 		products = append(products, p)
 	}
 	return products, total, rows.Err()
+}
+
+type ProductFilter struct {
+	Search     string
+	CategoryID string
+	MinPrice   int64
+	MaxPrice   int64
+	HasMin     bool
+	HasMax     bool
+	InStock    bool
+	Sort       string
+	Limit      int
+	Offset     int
+}
+
+const publicProductColumns = `p.id, p.category_id, p.name, p.description, p.price::bigint, p.stock, p.is_active, p.deleted_at, p.created_at, p.updated_at, c.id, c.name`
+
+// ListPublic returns non-deleted, active products matching the filter, with
+// category joined in and the total count for pagination meta. Empty filter
+// fields are ignored; sort defaults to newest.
+func (r *ProductRepo) ListPublic(ctx context.Context, f ProductFilter) ([]*model.Product, int64, error) {
+	where := `p.deleted_at IS NULL AND p.is_active = true`
+	args := []any{}
+	arg := func(v any) string {
+		args = append(args, v)
+		return fmt.Sprintf("$%d", len(args))
+	}
+
+	if s := strings.TrimSpace(f.Search); s != "" {
+		pattern := "%" + s + "%"
+		where += fmt.Sprintf(` AND (p.name ILIKE %s OR p.description ILIKE %s)`, arg(pattern), arg(pattern))
+	}
+	if f.CategoryID != "" {
+		where += fmt.Sprintf(` AND p.category_id = %s`, arg(f.CategoryID))
+	}
+	if f.HasMin {
+		where += fmt.Sprintf(` AND p.price >= %s`, arg(f.MinPrice))
+	}
+	if f.HasMax {
+		where += fmt.Sprintf(` AND p.price <= %s`, arg(f.MaxPrice))
+	}
+	if f.InStock {
+		where += ` AND p.stock > 0`
+	}
+
+	var total int64
+	if err := r.pool.QueryRow(ctx,
+		`SELECT count(*) FROM products p WHERE `+where, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	order := "p.created_at DESC"
+	switch f.Sort {
+	case "price_asc":
+		order = "p.price ASC, p.created_at DESC"
+	case "price_desc":
+		order = "p.price DESC, p.created_at DESC"
+	case "name_asc":
+		order = "p.name ASC, p.created_at DESC"
+	}
+
+	query := `SELECT ` + publicProductColumns + `
+		FROM products p
+		LEFT JOIN categories c ON c.id = p.category_id
+		WHERE ` + where + `
+		ORDER BY ` + order + `
+		LIMIT ` + arg(f.Limit) + ` OFFSET ` + arg(f.Offset)
+
+	rows, err := r.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	var products []*model.Product
+	for rows.Next() {
+		p, err := scanPublicProduct(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		products = append(products, p)
+	}
+	return products, total, rows.Err()
+}
+
+func scanPublicProduct(row rowScanner) (*model.Product, error) {
+	p := &model.Product{}
+	var catID, catName *string
+	err := row.Scan(&p.ID, &p.CategoryID, &p.Name, &p.Description, &p.Price, &p.Stock, &p.IsActive, &p.DeletedAt, &p.CreatedAt, &p.UpdatedAt, &catID, &catName)
+	if err != nil {
+		return nil, err
+	}
+	if catID != nil {
+		p.Category = &model.Category{ID: *catID, Name: *catName}
+	}
+	return p, nil
 }
 
 func scanProduct(row rowScanner) (*model.Product, error) {

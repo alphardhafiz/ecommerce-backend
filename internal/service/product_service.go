@@ -53,6 +53,34 @@ func (s *ProductService) UpdateStock(ctx context.Context, id string, stock int) 
 	return s.products.SetStock(ctx, id, stock)
 }
 
+type ProductListFilter struct {
+	Search     string
+	CategoryID string
+	MinPrice   int64
+	MaxPrice   int64
+	HasMin     bool
+	HasMax     bool
+	InStock    bool
+	Sort       string
+	Limit      int
+	Offset     int
+}
+
+func (s *ProductService) List(ctx context.Context, f ProductListFilter) ([]*model.Product, int64, error) {
+	return s.products.ListPublic(ctx, repository.ProductFilter{
+		Search:     f.Search,
+		CategoryID: f.CategoryID,
+		MinPrice:   f.MinPrice,
+		MaxPrice:   f.MaxPrice,
+		HasMin:     f.HasMin,
+		HasMax:     f.HasMax,
+		InStock:    f.InStock,
+		Sort:       f.Sort,
+		Limit:      f.Limit,
+		Offset:     f.Offset,
+	})
+}
+
 func (s *ProductService) validate(in ProductInput) error {
 	var errs []FieldError
 	if strings.TrimSpace(in.Name) == "" {

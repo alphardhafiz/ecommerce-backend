@@ -5,6 +5,7 @@ import "time"
 type Product struct {
 	ID          string
 	CategoryID  *string
+	Category    *Category
 	Name        string
 	Description *string
 	Price       int64

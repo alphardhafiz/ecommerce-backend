@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 
 	"ecommerce/server/internal/model"
 	"ecommerce/server/internal/repository"
@@ -24,6 +25,84 @@ type productRequest struct {
 	Price       int64   `json:"price"`
 	Stock       int64   `json:"stock"`
 	CategoryID  *string `json:"category_id"`
+}
+
+func (p *Product) List(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+
+	page := parsePositiveInt(q.Get("page"), 1)
+	limit := parsePositiveInt(q.Get("limit"), 12)
+	if limit > 50 {
+		limit = 50
+	}
+
+	filter := service.ProductListFilter{
+		Search:     q.Get("search"),
+		CategoryID: q.Get("category_id"),
+		Sort:       q.Get("sort"),
+		Limit:      limit,
+		Offset:     (page - 1) * limit,
+	}
+
+	switch filter.Sort {
+	case "", "newest", "price_asc", "price_desc", "name_asc":
+	default:
+		respondError(w, http.StatusBadRequest, "Invalid query parameter", "INVALID_QUERY_PARAM", nil)
+		return
+	}
+
+	if v := q.Get("min_price"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n < 0 {
+			respondError(w, http.StatusBadRequest, "Invalid query parameter", "INVALID_QUERY_PARAM", nil)
+			return
+		}
+		filter.MinPrice, filter.HasMin = n, true
+	}
+	if v := q.Get("max_price"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n < 0 {
+			respondError(w, http.StatusBadRequest, "Invalid query parameter", "INVALID_QUERY_PARAM", nil)
+			return
+		}
+		filter.MaxPrice, filter.HasMax = n, true
+	}
+	if v := q.Get("in_stock"); v != "" {
+		switch v {
+		case "true":
+			filter.InStock = true
+		case "false":
+		default:
+			respondError(w, http.StatusBadRequest, "Invalid query parameter", "INVALID_QUERY_PARAM", nil)
+			return
+		}
+	}
+
+	products, total, err := p.svc.List(r.Context(), filter)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "Internal server error", "INTERNAL_ERROR", nil)
+		return
+	}
+
+	data := make([]map[string]any, 0, len(products))
+	for _, prod := range products {
+		data = append(data, productPublicPayload(prod))
+	}
+	totalPages := 0
+	if total > 0 {
+		totalPages = int((total + int64(limit) - 1) / int64(limit))
+	}
+
+	respondJSON(w, http.StatusOK, map[string]any{
+		"success": true,
+		"data":    data,
+		"meta": map[string]any{
+			"page":        page,
+			"limit":       limit,
+			"total":       total,
+			"total_pages": totalPages,
+		},
+	})
 }
 
 func (p *Product) Create(w http.ResponseWriter, r *http.Request) {
@@ -161,5 +240,26 @@ func productPayload(p *model.Product) map[string]any {
 		"price":       p.Price,
 		"stock":       p.Stock,
 		"is_active":   p.IsActive,
+	}
+}
+
+// productPublicPayload is the public listing shape (PRD E): includes category
+// object and primary_image. Images arrive in T7 — null until then.
+func productPublicPayload(p *model.Product) map[string]any {
+	var category map[string]any
+	if p.Category != nil && p.Category.ID != "" {
+		category = map[string]any{
+			"id":   p.Category.ID,
+			"name": p.Category.Name,
+		}
+	}
+	return map[string]any{
+		"id":            p.ID,
+		"name":          p.Name,
+		"price":         p.Price,
+		"stock":         p.Stock,
+		"is_active":     p.IsActive,
+		"primary_image": nil,
+		"category":      category,
 	}
 }

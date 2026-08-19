@@ -14,6 +14,7 @@ import (
 
 	jwtpkg "ecommerce/server/internal/jwt"
 	"ecommerce/server/internal/middleware"
+	"ecommerce/server/internal/model"
 	"ecommerce/server/internal/repository"
 	"ecommerce/server/internal/service"
 )
@@ -399,5 +400,278 @@ func TestProductUpdateStockForbidden(t *testing.T) {
 	rec := adminProductSubRequest(t, h, "stock", "00000000-0000-0000-0000-000000000000", userToken(t, userID, "user"), `{"stock":1}`)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want 403", rec.Code)
+	}
+}
+
+func listProductsRequest(t *testing.T, h *Product, query string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/products"+query, nil)
+	rec := httptest.NewRecorder()
+	h.List(rec, req)
+	return rec
+}
+
+func seedProduct(t *testing.T, pool *pgxpool.Pool, name string, price, stock int64, categoryID *string) *model.Product {
+	t.Helper()
+	repo := repository.NewProductRepo(pool)
+	p, err := repo.Create(context.Background(), name, nil, price, stock, categoryID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func TestProductListPublic(t *testing.T) {
+	h, pool := newProductHandler(t)
+	catID := seedCategory(t, pool, "Pakaian", "pakaian")
+	defer pool.Exec(context.Background(), `DELETE FROM categories WHERE id = $1`, catID)
+
+	cat := &catID
+	p1 := seedProduct(t, pool, "Kaos Polos", 89000, 10, cat)
+	defer pool.Exec(context.Background(), `DELETE FROM products WHERE id = $1`, p1.ID)
+	p2 := seedProduct(t, pool, "Celana Jeans", 150000, 0, cat)
+	defer pool.Exec(context.Background(), `DELETE FROM products WHERE id = $1`, p2.ID)
+
+	rec := listProductsRequest(t, h, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	}
+
+	var body struct {
+		Success bool `json:"success"`
+		Data    []struct {
+			ID         string `json:"id"`
+			Name       string `json:"name"`
+			Price      int64  `json:"price"`
+			Stock      int64  `json:"stock"`
+			IsActive   bool   `json:"is_active"`
+			PrimaryImg any    `json:"primary_image"`
+			Category   struct {
+				ID   string `json:"id"`
+				Name string `json:"name"`
+			} `json:"category"`
+		} `json:"data"`
+		Meta struct {
+			Page       int `json:"page"`
+			Limit      int `json:"limit"`
+			Total      int `json:"total"`
+			TotalPages int `json:"total_pages"`
+		} `json:"meta"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if !body.Success || body.Meta.Limit != 12 || body.Meta.Total < 2 {
+		t.Errorf("body = %+v, want success + limit 12 + total>=2", body)
+	}
+	found1, found2 := false, false
+	for _, item := range body.Data {
+		if item.ID == p1.ID {
+			found1 = true
+			if item.Name != "Kaos Polos" || item.Price != 89000 || item.Category.ID != catID || item.Category.Name != "Pakaian" {
+				t.Errorf("item = %+v, want name/price/category populated", item)
+			}
+		}
+		if item.ID == p2.ID {
+			found2 = true
+		}
+	}
+	if !found1 || !found2 {
+		t.Errorf("list must contain both seeded products, got %+v", body.Data)
+	}
+}
+
+func TestProductListFilterSearch(t *testing.T) {
+	h, pool := newProductHandler(t)
+	p1 := seedProduct(t, pool, "Kaos Polos", 89000, 10, nil)
+	defer pool.Exec(context.Background(), `DELETE FROM products WHERE id = $1`, p1.ID)
+	seedProduct(t, pool, "Celana Jeans", 150000, 5, nil)
+
+	rec := listProductsRequest(t, h, "?search=kaos")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+
+	var body struct {
+		Data []struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"data"`
+		Meta struct {
+			Total int `json:"total"`
+		} `json:"meta"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Data) != 1 || body.Data[0].Name != "Kaos Polos" || body.Meta.Total != 1 {
+		t.Errorf("search filter = %+v, want only Kaos Polos", body)
+	}
+}
+
+func TestProductListFilterPriceRange(t *testing.T) {
+	h, pool := newProductHandler(t)
+	low := seedProduct(t, pool, "Murah", 5000, 5, nil)
+	defer pool.Exec(context.Background(), `DELETE FROM products WHERE id = $1`, low.ID)
+	mid := seedProduct(t, pool, "Sedang", 100000, 5, nil)
+	defer pool.Exec(context.Background(), `DELETE FROM products WHERE id = $1`, mid.ID)
+	high := seedProduct(t, pool, "Mahal", 500000, 5, nil)
+	defer pool.Exec(context.Background(), `DELETE FROM products WHERE id = $1`, high.ID)
+
+	rec := listProductsRequest(t, h, "?min_price=10000&max_price=200000")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+
+	var body struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, item := range body.Data {
+		got[item.ID] = true
+	}
+	if !got[mid.ID] {
+		t.Error("mid product (100000) must be in price range 10000-200000")
+	}
+	if got[low.ID] || got[high.ID] {
+		t.Errorf("price range filter wrong: low=%v high=%v", got[low.ID], got[high.ID])
+	}
+}
+
+func TestProductListSortPriceAsc(t *testing.T) {
+	h, pool := newProductHandler(t)
+	p1 := seedProduct(t, pool, "Murah", 5000, 5, nil)
+	defer pool.Exec(context.Background(), `DELETE FROM products WHERE id = $1`, p1.ID)
+	p2 := seedProduct(t, pool, "Mahal", 500000, 5, nil)
+	defer pool.Exec(context.Background(), `DELETE FROM products WHERE id = $1`, p2.ID)
+
+	rec := listProductsRequest(t, h, "?sort=price_asc")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+
+	var body struct {
+		Data []struct {
+			ID    string `json:"id"`
+			Price int64  `json:"price"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Data) < 2 {
+		t.Fatalf("expected at least 2 items, got %d", len(body.Data))
+	}
+	// first item must be the cheapest; verify it's one of ours and cheapest
+	if body.Data[0].Price != 5000 {
+		t.Errorf("first price = %d, want 5000 (cheapest first)", body.Data[0].Price)
+	}
+}
+
+func TestProductListSortInvalid(t *testing.T) {
+	h, _ := newProductHandler(t)
+	rec := listProductsRequest(t, h, "?sort=bogus")
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "INVALID_QUERY_PARAM") {
+		t.Errorf("body = %s, want INVALID_QUERY_PARAM", rec.Body.String())
+	}
+}
+
+func TestProductListInvalidMinPrice(t *testing.T) {
+	h, _ := newProductHandler(t)
+	rec := listProductsRequest(t, h, "?min_price=abc")
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "INVALID_QUERY_PARAM") {
+		t.Errorf("body = %s, want INVALID_QUERY_PARAM", rec.Body.String())
+	}
+}
+
+func TestProductListInStockFilter(t *testing.T) {
+	h, pool := newProductHandler(t)
+	p1 := seedProduct(t, pool, "Ada Stock", 10000, 5, nil)
+	defer pool.Exec(context.Background(), `DELETE FROM products WHERE id = $1`, p1.ID)
+	p2 := seedProduct(t, pool, "Habis", 10000, 0, nil)
+	defer pool.Exec(context.Background(), `DELETE FROM products WHERE id = $1`, p2.ID)
+
+	rec := listProductsRequest(t, h, "?in_stock=true")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+
+	var body struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range body.Data {
+		if item.ID == p2.ID {
+			t.Error("out-of-stock product must not appear with in_stock=true")
+		}
+	}
+}
+
+func TestProductListSoftDeletedHidden(t *testing.T) {
+	h, pool := newProductHandler(t)
+	p := seedProduct(t, pool, "Dihapus", 10000, 5, nil)
+	defer pool.Exec(context.Background(), `DELETE FROM products WHERE id = $1`, p.ID)
+
+	repo := repository.NewProductRepo(pool)
+	if err := repo.SoftDelete(context.Background(), p.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := listProductsRequest(t, h, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), p.ID) {
+		t.Errorf("soft-deleted product must not appear in public listing: %s", rec.Body.String())
+	}
+}
+
+func TestProductListPagination(t *testing.T) {
+	h, pool := newProductHandler(t)
+	ids := []string{}
+	defer func() {
+		pool.Exec(context.Background(), `DELETE FROM products WHERE id = ANY($1)`, ids)
+	}()
+	for i := 0; i < 5; i++ {
+		p := seedProduct(t, pool, "Produk"+string(rune('A'+i)), 10000, 5, nil)
+		ids = append(ids, p.ID)
+	}
+
+	rec := listProductsRequest(t, h, "?limit=2&page=1")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+
+	var body struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+		Meta struct {
+			Page       int `json:"page"`
+			Limit      int `json:"limit"`
+			Total      int `json:"total"`
+			TotalPages int `json:"total_pages"`
+		} `json:"meta"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Data) != 2 || body.Meta.Limit != 2 || body.Meta.Total < 5 || body.Meta.TotalPages < 3 {
+		t.Errorf("pagination = %+v, want 2 per page, total>=5, pages>=3", body.Meta)
 	}
 }

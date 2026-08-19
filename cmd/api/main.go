@@ -85,6 +85,7 @@ func main() {
 	mux.Handle("GET /admin/users", adminRequired(http.HandlerFunc(userHandler.ListUsers)))
 	mux.Handle("PATCH /admin/users/{id}/status", adminRequired(http.HandlerFunc(userHandler.UpdateUserStatus)))
 	mux.HandleFunc("GET /categories", categoryHandler.ListActive)
+	mux.HandleFunc("GET /products", productHandler.List)
 	mux.Handle("POST /admin/categories", adminRequired(http.HandlerFunc(categoryHandler.Create)))
 	mux.Handle("PUT /admin/categories/{id}", adminRequired(http.HandlerFunc(categoryHandler.Update)))
 	mux.Handle("DELETE /admin/categories/{id}", adminRequired(http.HandlerFunc(categoryHandler.Delete)))
