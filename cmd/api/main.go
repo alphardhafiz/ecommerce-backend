@@ -91,6 +91,8 @@ func main() {
 	mux.Handle("POST /admin/products", adminRequired(http.HandlerFunc(productHandler.Create)))
 	mux.Handle("PUT /admin/products/{id}", adminRequired(http.HandlerFunc(productHandler.Update)))
 	mux.Handle("DELETE /admin/products/{id}", adminRequired(http.HandlerFunc(productHandler.Delete)))
+	mux.Handle("PATCH /admin/products/{id}/status", adminRequired(http.HandlerFunc(productHandler.UpdateStatus)))
+	mux.Handle("PATCH /admin/products/{id}/stock", adminRequired(http.HandlerFunc(productHandler.UpdateStock)))
 
 	server := &http.Server{
 		Addr:    ":" + cfg.Port,

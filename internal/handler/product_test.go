@@ -61,6 +61,27 @@ func adminProductRequest(t *testing.T, h *Product, method, id, token, body strin
 	return rec
 }
 
+func adminProductSubRequest(t *testing.T, h *Product, sub, id, token, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPatch, "/admin/products/"+id+"/"+sub, bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	req.SetPathValue("id", id)
+	rec := httptest.NewRecorder()
+	auth := middleware.RequireAuth(jwtpkg.New("test-secret", jwtpkg.DefaultTTL))
+	var hf func(http.ResponseWriter, *http.Request)
+	switch sub {
+	case "stock":
+		hf = h.UpdateStock
+	default:
+		hf = h.UpdateStatus
+	}
+	auth(middleware.RequireRole("admin")(http.HandlerFunc(hf))).ServeHTTP(rec, req)
+	return rec
+}
+
 func seedCategory(t *testing.T, pool *pgxpool.Pool, name, slug string) string {
 	t.Helper()
 	repo := repository.NewCategoryRepo(pool)
@@ -258,5 +279,125 @@ func TestProductDeleteNotFound(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "PRODUCT_NOT_FOUND") {
 		t.Errorf("body = %s, want PRODUCT_NOT_FOUND", rec.Body.String())
+	}
+}
+
+func TestProductUpdateStatus(t *testing.T) {
+	h, pool := newProductHandler(t)
+	adminID := seedAdmin(t, pool, "admin-prod-status@example.com")
+	defer pool.Exec(context.Background(), `DELETE FROM users WHERE email = $1`, "admin-prod-status@example.com")
+
+	prodRepo := repository.NewProductRepo(pool)
+	created, err := prodRepo.Create(context.Background(), "Produk", nil, 10000, 5, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Exec(context.Background(), `DELETE FROM products WHERE id = $1`, created.ID)
+
+	rec := adminProductSubRequest(t, h, "status", created.ID, userToken(t, adminID, "admin"), `{"is_active":false}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	}
+
+	var body struct {
+		Data struct {
+			IsActive bool `json:"is_active"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Data.IsActive {
+		t.Error("is_active must be false after toggle")
+	}
+
+	list, _, err := prodRepo.ListActive(context.Background(), 50, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range list {
+		if item.ID == created.ID {
+			t.Error("inactive product still appears in ListActive()")
+		}
+	}
+}
+
+func TestProductUpdateStock(t *testing.T) {
+	h, pool := newProductHandler(t)
+	adminID := seedAdmin(t, pool, "admin-prod-stock@example.com")
+	defer pool.Exec(context.Background(), `DELETE FROM users WHERE email = $1`, "admin-prod-stock@example.com")
+
+	prodRepo := repository.NewProductRepo(pool)
+	created, err := prodRepo.Create(context.Background(), "Produk", nil, 10000, 5, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Exec(context.Background(), `DELETE FROM products WHERE id = $1`, created.ID)
+
+	rec := adminProductSubRequest(t, h, "stock", created.ID, userToken(t, adminID, "admin"), `{"stock":25}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	}
+
+	var body struct {
+		Data struct {
+			Stock int `json:"stock"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Data.Stock != 25 {
+		t.Errorf("stock = %d, want 25", body.Data.Stock)
+	}
+}
+
+func TestProductUpdateStockNegative(t *testing.T) {
+	h, pool := newProductHandler(t)
+	adminID := seedAdmin(t, pool, "admin-prod-stockneg@example.com")
+	defer pool.Exec(context.Background(), `DELETE FROM users WHERE email = $1`, "admin-prod-stockneg@example.com")
+
+	prodRepo := repository.NewProductRepo(pool)
+	created, err := prodRepo.Create(context.Background(), "Produk", nil, 10000, 5, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Exec(context.Background(), `DELETE FROM products WHERE id = $1`, created.ID)
+
+	rec := adminProductSubRequest(t, h, "stock", created.ID, userToken(t, adminID, "admin"), `{"stock":-1}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "VALIDATION_ERROR") {
+		t.Errorf("body = %s, want VALIDATION_ERROR", rec.Body.String())
+	}
+}
+
+func TestProductUpdateStatusNotFound(t *testing.T) {
+	h, pool := newProductHandler(t)
+	adminID := seedAdmin(t, pool, "admin-prod-status404@example.com")
+	defer pool.Exec(context.Background(), `DELETE FROM users WHERE email = $1`, "admin-prod-status404@example.com")
+
+	rec := adminProductSubRequest(t, h, "status", "00000000-0000-0000-0000-000000000000", userToken(t, adminID, "admin"), `{"is_active":true}`)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "PRODUCT_NOT_FOUND") {
+		t.Errorf("body = %s, want PRODUCT_NOT_FOUND", rec.Body.String())
+	}
+}
+
+func TestProductUpdateStockForbidden(t *testing.T) {
+	h, pool := newProductHandler(t)
+	email := "user-prod-stock@example.com"
+	seedUser(t, pool, email, "abc12345", "active")
+	defer pool.Exec(context.Background(), `DELETE FROM users WHERE email = $1`, email)
+
+	var userID string
+	pool.QueryRow(context.Background(), `SELECT id FROM users WHERE email = $1`, email).Scan(&userID)
+
+	rec := adminProductSubRequest(t, h, "stock", "00000000-0000-0000-0000-000000000000", userToken(t, userID, "user"), `{"stock":1}`)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rec.Code)
 	}
 }

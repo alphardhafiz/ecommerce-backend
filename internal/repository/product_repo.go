@@ -80,6 +80,36 @@ func (r *ProductRepo) SoftDelete(ctx context.Context, id string) error {
 	return nil
 }
 
+func (r *ProductRepo) SetActive(ctx context.Context, id string, isActive bool) (*model.Product, error) {
+	row := r.pool.QueryRow(ctx,
+		`UPDATE products
+		 SET is_active = $2, updated_at = now()
+		 WHERE id = $1
+		 RETURNING `+productColumns,
+		id, isActive)
+
+	p, err := scanProduct(row)
+	if err != nil {
+		return nil, mapProductError(err)
+	}
+	return p, nil
+}
+
+func (r *ProductRepo) SetStock(ctx context.Context, id string, stock int) (*model.Product, error) {
+	row := r.pool.QueryRow(ctx,
+		`UPDATE products
+		 SET stock = $2, updated_at = now()
+		 WHERE id = $1
+		 RETURNING `+productColumns,
+		id, stock)
+
+	p, err := scanProduct(row)
+	if err != nil {
+		return nil, mapProductError(err)
+	}
+	return p, nil
+}
+
 // ListActive returns non-deleted, active products ordered newest first, with
 // the total count matching the same filter (for pagination meta).
 func (r *ProductRepo) ListActive(ctx context.Context, limit, offset int) ([]*model.Product, int64, error) {

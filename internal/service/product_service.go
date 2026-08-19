@@ -42,6 +42,17 @@ func (s *ProductService) SoftDelete(ctx context.Context, id string) error {
 	return s.products.SoftDelete(ctx, id)
 }
 
+func (s *ProductService) UpdateStatus(ctx context.Context, id string, isActive bool) (*model.Product, error) {
+	return s.products.SetActive(ctx, id, isActive)
+}
+
+func (s *ProductService) UpdateStock(ctx context.Context, id string, stock int) (*model.Product, error) {
+	if stock < 0 {
+		return nil, &ValidationError{Errors: []FieldError{{Field: "stock", Message: "Stock must be greater than or equal to 0"}}}
+	}
+	return s.products.SetStock(ctx, id, stock)
+}
+
 func (s *ProductService) validate(in ProductInput) error {
 	var errs []FieldError
 	if strings.TrimSpace(in.Name) == "" {

@@ -47,7 +47,7 @@ Pecahan task per fase mengikuti PRD §U (Development Roadmap). Sumber kebenaran:
 - [x] Repository categories + products (soft delete, partial index)
 - [x] `GET /categories`, `POST/PUT/DELETE /admin/categories`
 - [x] `POST /admin/products` + `PUT/DELETE /admin/products/:id` (soft delete)
-- [ ] `PATCH /admin/products/:id/status`, `PATCH /admin/products/:id/stock`
+- [x] `PATCH /admin/products/:id/status`, `PATCH /admin/products/:id/stock`
 - [ ] `GET /products` (pagination, search `ILIKE`, filter category/harga/stock, sort)
 - [ ] `GET /products/:id` (detail + images + kategori)
 - [ ] Upload image ke object storage (`internal/` client) + `POST/DELETE /admin/products/:id/images[/:imageId]` (validasi MIME/ukuran, rename UUID)

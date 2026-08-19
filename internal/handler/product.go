@@ -74,6 +74,52 @@ func (p *Product) Delete(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+type productStatusRequest struct {
+	IsActive bool `json:"is_active"`
+}
+
+func (p *Product) UpdateStatus(w http.ResponseWriter, r *http.Request) {
+	var req productStatusRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid request body", "INVALID_REQUEST", nil)
+		return
+	}
+
+	product, err := p.svc.UpdateStatus(r.Context(), r.PathValue("id"), req.IsActive)
+	if err != nil {
+		p.respondError(w, err)
+		return
+	}
+
+	respondJSON(w, http.StatusOK, map[string]any{
+		"success": true,
+		"data":    productPayload(product),
+	})
+}
+
+type productStockRequest struct {
+	Stock int `json:"stock"`
+}
+
+func (p *Product) UpdateStock(w http.ResponseWriter, r *http.Request) {
+	var req productStockRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid request body", "INVALID_REQUEST", nil)
+		return
+	}
+
+	product, err := p.svc.UpdateStock(r.Context(), r.PathValue("id"), req.Stock)
+	if err != nil {
+		p.respondError(w, err)
+		return
+	}
+
+	respondJSON(w, http.StatusOK, map[string]any{
+		"success": true,
+		"data":    productPayload(product),
+	})
+}
+
 func decodeProductRequest(w http.ResponseWriter, r *http.Request) (service.ProductInput, bool) {
 	var req productRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
