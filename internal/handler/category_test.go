@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -17,6 +19,18 @@ import (
 	"ecommerce/server/internal/repository"
 	"ecommerce/server/internal/service"
 )
+
+// catTestName returns a unique category name so its auto-generated slug never
+// collides with dev/leftover data in the shared DB.
+func catTestName(base string) string {
+	return fmt.Sprintf("%s %d", base, time.Now().UnixNano())
+}
+
+// slugifyForTest mirrors the service slugify for the "Base <digits>" shape
+// produced by catTestName (lowercase, spaces -> dashes).
+func slugifyForTest(name string) string {
+	return strings.ReplaceAll(strings.ToLower(name), " ", "-")
+}
 
 func newCategoryHandler(t *testing.T) (*Category, *pgxpool.Pool) {
 	t.Helper()
@@ -72,7 +86,8 @@ func TestCategoryCreateSuccess(t *testing.T) {
 	adminID := seedAdmin(t, pool, "admin-cat-create@example.com")
 	defer pool.Exec(context.Background(), `DELETE FROM users WHERE email = $1`, "admin-cat-create@example.com")
 
-	rec := adminCategoryRequest(t, h, http.MethodPost, "", userToken(t, adminID, "admin"), `{"name":"Pakaian"}`)
+	name := catTestName("Pakaian")
+	rec := adminCategoryRequest(t, h, http.MethodPost, "", userToken(t, adminID, "admin"), `{"name":"`+name+`"}`)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status = %d, want 201, body: %s", rec.Code, rec.Body.String())
 	}
@@ -88,8 +103,8 @@ func TestCategoryCreateSuccess(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if !body.Success || body.Data.Name != "Pakaian" || body.Data.Slug != "pakaian" || body.Data.ID == "" {
-		t.Errorf("body = %+v, want name=Pakaian slug=pakaian", body)
+	if !body.Success || body.Data.Name != name || body.Data.Slug != slugifyForTest(name) || body.Data.ID == "" {
+		t.Errorf("body = %+v, want name=%s slug=%s", body, name, slugifyForTest(name))
 	}
 	defer pool.Exec(context.Background(), `DELETE FROM categories WHERE id = $1`, body.Data.ID)
 }
@@ -123,7 +138,8 @@ func TestCategoryCreateDuplicateSlug(t *testing.T) {
 	defer pool.Exec(context.Background(), `DELETE FROM users WHERE email = $1`, "admin-cat-dup@example.com")
 
 	token := userToken(t, adminID, "admin")
-	first := adminCategoryRequest(t, h, http.MethodPost, "", token, `{"name":"Aksesoris"}`)
+	name := catTestName("Aksesoris")
+	first := adminCategoryRequest(t, h, http.MethodPost, "", token, `{"name":"`+name+`"}`)
 	if first.Code != http.StatusCreated {
 		t.Fatalf("first create status = %d, body: %s", first.Code, first.Body.String())
 	}
@@ -136,7 +152,7 @@ func TestCategoryCreateDuplicateSlug(t *testing.T) {
 	defer pool.Exec(context.Background(), `DELETE FROM categories WHERE id = $1`, parsed.Data.ID)
 
 	// same slug via same name
-	rec := adminCategoryRequest(t, h, http.MethodPost, "", token, `{"name":"Aksesoris"}`)
+	rec := adminCategoryRequest(t, h, http.MethodPost, "", token, `{"name":"`+name+`"}`)
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("status = %d, want 409, body: %s", rec.Code, rec.Body.String())
 	}
@@ -165,13 +181,15 @@ func TestCategoryUpdate(t *testing.T) {
 	defer pool.Exec(context.Background(), `DELETE FROM users WHERE email = $1`, "admin-cat-update@example.com")
 
 	catRepo := repository.NewCategoryRepo(pool)
-	cat, err := catRepo.Create(context.Background(), "Pakaian", "pakaian")
+	origName := catTestName("Pakaian")
+	cat, err := catRepo.Create(context.Background(), origName, slugifyForTest(origName))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer pool.Exec(context.Background(), `DELETE FROM categories WHERE id = $1`, cat.ID)
 
-	rec := adminCategoryRequest(t, h, http.MethodPut, cat.ID, userToken(t, adminID, "admin"), `{"name":"Pakaian Pria"}`)
+	newName := catTestName("Pakaian Pria")
+	rec := adminCategoryRequest(t, h, http.MethodPut, cat.ID, userToken(t, adminID, "admin"), `{"name":"`+newName+`"}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200, body: %s", rec.Code, rec.Body.String())
 	}
@@ -185,8 +203,8 @@ func TestCategoryUpdate(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if body.Data.Name != "Pakaian Pria" || body.Data.Slug != "pakaian-pria" {
-		t.Errorf("body = %+v, want name=Pakaian Pria slug=pakaian-pria", body.Data)
+	if body.Data.Name != newName || body.Data.Slug != slugifyForTest(newName) {
+		t.Errorf("body = %+v, want name=%s slug=%s", body.Data, newName, slugifyForTest(newName))
 	}
 }
 
@@ -210,7 +228,8 @@ func TestCategoryDeleteSoftAndHiddenFromPublic(t *testing.T) {
 	defer pool.Exec(context.Background(), `DELETE FROM users WHERE email = $1`, "admin-cat-del@example.com")
 
 	catRepo := repository.NewCategoryRepo(pool)
-	cat, err := catRepo.Create(context.Background(), "Elektronik", "elektronik")
+	delName := catTestName("Elektronik")
+	cat, err := catRepo.Create(context.Background(), delName, slugifyForTest(delName))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -242,7 +261,8 @@ func TestCategoryDeleteSoftAndHiddenFromPublic(t *testing.T) {
 func TestCategoryListActivePublic(t *testing.T) {
 	h, pool := newCategoryHandler(t)
 	catRepo := repository.NewCategoryRepo(pool)
-	cat, err := catRepo.Create(context.Background(), "Buku", "buku")
+	bukuName := catTestName("Buku")
+	cat, err := catRepo.Create(context.Background(), bukuName, slugifyForTest(bukuName))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -271,7 +291,7 @@ func TestCategoryListActivePublic(t *testing.T) {
 	}
 	found := false
 	for _, c := range body.Data {
-		if c.ID == cat.ID && c.Name == "Buku" && c.Slug == "buku" {
+		if c.ID == cat.ID && c.Name == bukuName && c.Slug == slugifyForTest(bukuName) {
 			found = true
 		}
 	}

@@ -292,3 +292,52 @@ func mapProductError(err error) error {
 	}
 	return err
 }
+
+var ErrImageNotFound = errors.New("product image does not exist")
+
+// CreateImage inserts a product image and returns it.
+func (r *ProductRepo) CreateImage(ctx context.Context, productID, url string, displayOrder int) (*model.ProductImage, error) {
+	row := r.pool.QueryRow(ctx,
+		`INSERT INTO product_images (product_id, url, display_order)
+		 VALUES ($1, $2, $3)
+		 RETURNING id, url, is_primary, display_order, created_at`,
+		productID, url, displayOrder)
+
+	img := &model.ProductImage{}
+	if err := row.Scan(&img.ID, &img.URL, &img.IsPrimary, &img.DisplayOrder, &img.CreatedAt); err != nil {
+		return nil, mapProductError(err)
+	}
+	return img, nil
+}
+
+// FindImage returns an image belonging to the product (for ownership check
+// before delete).
+func (r *ProductRepo) FindImage(ctx context.Context, productID, imageID string) (*model.ProductImage, error) {
+	row := r.pool.QueryRow(ctx,
+		`SELECT id, url, is_primary, display_order, created_at
+		 FROM product_images
+		 WHERE id = $1 AND product_id = $2`, imageID, productID)
+
+	img := &model.ProductImage{}
+	if err := row.Scan(&img.ID, &img.URL, &img.IsPrimary, &img.DisplayOrder, &img.CreatedAt); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrImageNotFound
+		}
+		return nil, err
+	}
+	return img, nil
+}
+
+// DeleteImage removes the image row from the DB (storage object is removed by
+// the service).
+func (r *ProductRepo) DeleteImage(ctx context.Context, productID, imageID string) error {
+	tag, err := r.pool.Exec(ctx,
+		`DELETE FROM product_images WHERE id = $1 AND product_id = $2`, imageID, productID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrImageNotFound
+	}
+	return nil
+}

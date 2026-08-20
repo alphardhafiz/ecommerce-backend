@@ -3,6 +3,7 @@ package handler
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strconv"
 
@@ -212,6 +213,67 @@ func (p *Product) UpdateStock(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+const maxUploadBytes = 5 << 20 // 5MB file limit (PRD R.12)
+
+// maxMultipartBody allows the 5MB file plus multipart overhead (boundary,
+// per-part headers) to pass MaxBytesReader. The authoritative file-size check
+// stays in the service (validateImage on the decoded bytes).
+const maxMultipartBody = maxUploadBytes + (1 << 20)
+
+func (p *Product) UploadImage(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxMultipartBody)
+	if err := r.ParseMultipartForm(maxUploadBytes); err != nil {
+		respondError(w, http.StatusBadRequest, "File too large or invalid multipart form", "VALIDATION_ERROR",
+			[]map[string]string{{"field": "file", "message": "Image must be at most 5MB"}})
+		return
+	}
+	file, header, err := r.FormFile("image")
+	if err != nil {
+		respondError(w, http.StatusBadRequest, "Missing image file", "VALIDATION_ERROR",
+			[]map[string]string{{"field": "file", "message": "image field is required"}})
+		return
+	}
+	defer file.Close()
+
+	data, err := io.ReadAll(file)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "Internal server error", "INTERNAL_ERROR", nil)
+		return
+	}
+
+	img, err := p.svc.UploadImage(r.Context(), r.PathValue("id"), header.Filename, data)
+	if err != nil {
+		p.respondError(w, err)
+		return
+	}
+
+	respondJSON(w, http.StatusCreated, map[string]any{
+		"success": true,
+		"data":    productImagePayload(img),
+	})
+}
+
+func (p *Product) DeleteImage(w http.ResponseWriter, r *http.Request) {
+	if err := p.svc.DeleteImage(r.Context(), r.PathValue("id"), r.PathValue("imageId")); err != nil {
+		p.respondError(w, err)
+		return
+	}
+
+	respondJSON(w, http.StatusOK, map[string]any{
+		"success": true,
+		"data":    nil,
+	})
+}
+
+func productImagePayload(img *model.ProductImage) map[string]any {
+	return map[string]any{
+		"id":         img.ID,
+		"url":        img.URL,
+		"is_primary": img.IsPrimary,
+		"order":      img.DisplayOrder,
+	}
+}
+
 func decodeProductRequest(w http.ResponseWriter, r *http.Request) (service.ProductInput, bool) {
 	var req productRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -239,6 +301,14 @@ func (p *Product) respondError(w http.ResponseWriter, err error) {
 	}
 	if errors.Is(err, repository.ErrCategoryNotFound) {
 		respondError(w, http.StatusNotFound, "Category not found", "CATEGORY_NOT_FOUND", nil)
+		return
+	}
+	if errors.Is(err, repository.ErrImageNotFound) {
+		respondError(w, http.StatusNotFound, "Image not found", "IMAGE_NOT_FOUND", nil)
+		return
+	}
+	if errors.Is(err, service.ErrStorageFailure) {
+		respondError(w, http.StatusBadGateway, "Storage upload failed", "STORAGE_UPLOAD_FAILED", nil)
 		return
 	}
 	respondError(w, http.StatusInternalServerError, "Internal server error", "INTERNAL_ERROR", nil)

@@ -18,6 +18,7 @@ import (
 	"ecommerce/server/internal/middleware"
 	"ecommerce/server/internal/repository"
 	"ecommerce/server/internal/service"
+	"ecommerce/server/internal/storage"
 	"ecommerce/server/pkg/logger"
 )
 
@@ -65,7 +66,8 @@ func main() {
 	categorySvc := service.NewCategoryService(categoryRepo)
 	categoryHandler := handler.NewCategory(categorySvc)
 	productRepo := repository.NewProductRepo(pool)
-	productSvc := service.NewProductService(productRepo)
+	productSvc := service.NewProductService(productRepo).WithStorage(
+		storage.New(cfg.StorageEndpoint, cfg.StorageBucket, cfg.StorageAccessKeyID, cfg.StorageSecretAccessKey))
 	productHandler := handler.NewProduct(productSvc)
 
 	mux := http.NewServeMux()
@@ -95,6 +97,8 @@ func main() {
 	mux.Handle("DELETE /admin/products/{id}", adminRequired(http.HandlerFunc(productHandler.Delete)))
 	mux.Handle("PATCH /admin/products/{id}/status", adminRequired(http.HandlerFunc(productHandler.UpdateStatus)))
 	mux.Handle("PATCH /admin/products/{id}/stock", adminRequired(http.HandlerFunc(productHandler.UpdateStock)))
+	mux.Handle("POST /admin/products/{id}/images", adminRequired(http.HandlerFunc(productHandler.UploadImage)))
+	mux.Handle("DELETE /admin/products/{id}/images/{imageId}", adminRequired(http.HandlerFunc(productHandler.DeleteImage)))
 
 	server := &http.Server{
 		Addr:    ":" + cfg.Port,

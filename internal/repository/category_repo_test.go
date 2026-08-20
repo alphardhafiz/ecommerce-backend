@@ -3,16 +3,23 @@ package repository
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
+	"time"
 
 	"ecommerce/server/internal/model"
 )
+
+func uniqueSlug(base string) string {
+	return fmt.Sprintf("%s-%d", base, time.Now().UnixNano())
+}
 
 func TestCategoryRepoCreateFindUpdate(t *testing.T) {
 	ctx := context.Background()
 	repo := NewCategoryRepo(newTestPool(t))
 
-	c, err := repo.Create(ctx, "Pakaian", "pakaian")
+	slug := uniqueSlug("pakaian")
+	c, err := repo.Create(ctx, "Pakaian", slug)
 	if err != nil {
 		t.Fatalf("Create() error: %v", err)
 	}
@@ -20,8 +27,8 @@ func TestCategoryRepoCreateFindUpdate(t *testing.T) {
 		repo.pool.Exec(ctx, `DELETE FROM categories WHERE id = $1`, c.ID)
 	}()
 
-	if c.ID == "" || c.Slug != "pakaian" || !c.IsActive {
-		t.Errorf("Create() = %+v, want slug=pakaian is_active=true", c)
+	if c.ID == "" || c.Slug != slug || !c.IsActive {
+		t.Errorf("Create() = %+v, want slug=%s is_active=true", c, slug)
 	}
 	if c.DeletedAt != nil {
 		t.Error("Create() DeletedAt should be nil")
@@ -35,11 +42,12 @@ func TestCategoryRepoCreateFindUpdate(t *testing.T) {
 		t.Errorf("FindByID() name = %q, want Pakaian", got.Name)
 	}
 
-	upd, err := repo.Update(ctx, c.ID, "Pakaian Pria", "pakaian-pria")
+	updSlug := uniqueSlug("pakaian-pria")
+	upd, err := repo.Update(ctx, c.ID, "Pakaian Pria", updSlug)
 	if err != nil {
 		t.Fatalf("Update() error: %v", err)
 	}
-	if upd.Name != "Pakaian Pria" || upd.Slug != "pakaian-pria" {
+	if upd.Name != "Pakaian Pria" || upd.Slug != updSlug {
 		t.Errorf("Update() = %+v, want name+slug updated", upd)
 	}
 }
@@ -48,7 +56,7 @@ func TestCategoryRepoSoftDeleteExcludedFromActive(t *testing.T) {
 	ctx := context.Background()
 	repo := NewCategoryRepo(newTestPool(t))
 
-	c, err := repo.Create(ctx, "Elektronik", "elektronik")
+	c, err := repo.Create(ctx, "Elektronik", uniqueSlug("elektronik"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +94,8 @@ func TestCategoryRepoSlugTaken(t *testing.T) {
 	ctx := context.Background()
 	repo := NewCategoryRepo(newTestPool(t))
 
-	c, err := repo.Create(ctx, "Aksesoris", "aksesoris")
+	slug := uniqueSlug("aksesoris")
+	c, err := repo.Create(ctx, "Aksesoris", slug)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +103,7 @@ func TestCategoryRepoSlugTaken(t *testing.T) {
 		repo.pool.Exec(ctx, `DELETE FROM categories WHERE id = $1`, c.ID)
 	}()
 
-	_, err = repo.Create(ctx, "Aksesoris Lain", "aksesoris")
+	_, err = repo.Create(ctx, "Aksesoris Lain", slug)
 	if !errors.Is(err, ErrSlugTaken) {
 		t.Errorf("duplicate slug error = %v, want ErrSlugTaken", err)
 	}

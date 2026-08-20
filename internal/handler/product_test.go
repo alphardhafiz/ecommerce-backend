@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -17,6 +20,7 @@ import (
 	"ecommerce/server/internal/model"
 	"ecommerce/server/internal/repository"
 	"ecommerce/server/internal/service"
+	"ecommerce/server/internal/storage"
 )
 
 func newProductHandler(t *testing.T) (*Product, *pgxpool.Pool) {
@@ -30,7 +34,7 @@ func newProductHandler(t *testing.T) (*Product, *pgxpool.Pool) {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	return NewProduct(service.NewProductService(repository.NewProductRepo(pool))), pool
+	return NewProduct(service.NewProductService(repository.NewProductRepo(pool)).WithStorage(storage.New("", "", "", ""))), pool
 }
 
 func adminProductRequest(t *testing.T, h *Product, method, id, token, body string) *httptest.ResponseRecorder {
@@ -83,10 +87,10 @@ func adminProductSubRequest(t *testing.T, h *Product, sub, id, token, body strin
 	return rec
 }
 
-func seedCategory(t *testing.T, pool *pgxpool.Pool, name, slug string) string {
+func seedCategory(t *testing.T, pool *pgxpool.Pool, name, _ string) string {
 	t.Helper()
 	repo := repository.NewCategoryRepo(pool)
-	cat, err := repo.Create(context.Background(), name, slug)
+	cat, err := repo.Create(context.Background(), name, fmt.Sprintf("slug-%d", time.Now().UnixNano()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -483,11 +487,15 @@ func TestProductListPublic(t *testing.T) {
 
 func TestProductListFilterSearch(t *testing.T) {
 	h, pool := newProductHandler(t)
-	p1 := seedProduct(t, pool, "Kaos Polos", 89000, 10, nil)
+	// unique name so leftover dev data ("Kaos Polos") can't inflate the match
+	searchName := fmt.Sprintf("Kaos Polos %d", time.Now().UnixNano())
+	p1 := seedProduct(t, pool, searchName, 89000, 10, nil)
 	defer pool.Exec(context.Background(), `DELETE FROM products WHERE id = $1`, p1.ID)
 	seedProduct(t, pool, "Celana Jeans", 150000, 5, nil)
 
-	rec := listProductsRequest(t, h, "?search=kaos")
+	// search only the unique token to assert exact filtering
+	token := strings.SplitN(searchName, " ", 2)[0]
+	rec := listProductsRequest(t, h, "?search="+token)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
@@ -504,8 +512,20 @@ func TestProductListFilterSearch(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if len(body.Data) != 1 || body.Data[0].Name != "Kaos Polos" || body.Meta.Total != 1 {
-		t.Errorf("search filter = %+v, want only Kaos Polos", body)
+	found := false
+	for _, item := range body.Data {
+		if item.ID == p1.ID {
+			found = true
+			if item.Name != searchName {
+				t.Errorf("item name = %q, want %q", item.Name, searchName)
+			}
+		}
+		if strings.Contains(item.Name, "Celana Jeans") {
+			t.Error("search must not return Celana Jeans")
+		}
+	}
+	if !found || body.Meta.Total < 1 {
+		t.Errorf("search filter = %+v, want to include the seeded product", body)
 	}
 }
 
@@ -797,5 +817,194 @@ func TestProductDetailSoftDeletedHidden(t *testing.T) {
 	rec := productDetailRequest(t, h, prod.ID)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404 (soft-deleted product not public)", rec.Code)
+	}
+}
+
+func multipartImageRequest(t *testing.T, h *Product, adminID, method, productID, imageID, filename string, data []byte) *httptest.ResponseRecorder {
+	t.Helper()
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	if data != nil {
+		fw, err := mw.CreateFormFile("image", filename)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := fw.Write(data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mw.Close()
+
+	path := "/admin/products/" + productID + "/images"
+	if imageID != "" {
+		path += "/" + imageID
+	}
+	req := httptest.NewRequest(method, path, &buf)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	if productID != "" {
+		req.SetPathValue("id", productID)
+	}
+	if imageID != "" {
+		req.SetPathValue("imageId", imageID)
+	}
+
+	token := userToken(t, adminID, "admin")
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	auth := middleware.RequireAuth(jwtpkg.New("test-secret", jwtpkg.DefaultTTL))
+	var hf func(http.ResponseWriter, *http.Request)
+	if method == http.MethodDelete {
+		hf = h.DeleteImage
+	} else {
+		hf = h.UploadImage
+	}
+	auth(middleware.RequireRole("admin")(http.HandlerFunc(hf))).ServeHTTP(rec, req)
+	return rec
+}
+
+func TestProductUploadImageSuccess(t *testing.T) {
+	h, pool := newProductHandler(t)
+	prod := seedProduct(t, pool, "Produk Gambar", 10000, 5, nil)
+	defer pool.Exec(context.Background(), `DELETE FROM products WHERE id = $1`, prod.ID)
+
+	adminEmail := "admin-img-ok@example.com"
+	adminID := seedAdmin(t, pool, adminEmail)
+	defer pool.Exec(context.Background(), `DELETE FROM users WHERE email = $1`, adminEmail)
+
+	// minimal valid PNG magic bytes
+	png := []byte{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A}
+	rec := multipartImageRequest(t, h, adminID, http.MethodPost, prod.ID, "", "foto.png", png)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201, body: %s", rec.Code, rec.Body.String())
+	}
+
+	var body struct {
+		Success bool `json:"success"`
+		Data    struct {
+			ID  string `json:"id"`
+			URL string `json:"url"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if !body.Success || body.Data.ID == "" || body.Data.URL == "" {
+		t.Errorf("body = %+v, want uploaded image with a URL", body.Data)
+	}
+	if strings.Contains(body.Data.URL, "foto.png") {
+		t.Error("URL must not contain original filename (UUID rename)")
+	}
+	defer pool.Exec(context.Background(), `DELETE FROM product_images WHERE id = $1`, body.Data.ID)
+}
+
+func TestProductUploadImageRejectNonImage(t *testing.T) {
+	h, pool := newProductHandler(t)
+	prod := seedProduct(t, pool, "Produk Gambar", 10000, 5, nil)
+	defer pool.Exec(context.Background(), `DELETE FROM products WHERE id = $1`, prod.ID)
+
+	adminEmail := "admin-img-bad@example.com"
+	adminID := seedAdmin(t, pool, adminEmail)
+	defer pool.Exec(context.Background(), `DELETE FROM users WHERE email = $1`, adminEmail)
+
+	rec := multipartImageRequest(t, h, adminID, http.MethodPost, prod.ID, "", "script.php", []byte("<?php echo 1; ?>"))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "VALIDATION_ERROR") {
+		t.Errorf("body = %s, want VALIDATION_ERROR", rec.Body.String())
+	}
+}
+
+func TestProductUploadImageRejectOversize(t *testing.T) {
+	h, pool := newProductHandler(t)
+	prod := seedProduct(t, pool, "Produk Gambar", 10000, 5, nil)
+	defer pool.Exec(context.Background(), `DELETE FROM products WHERE id = $1`, prod.ID)
+
+	adminEmail := "admin-img-big@example.com"
+	adminID := seedAdmin(t, pool, adminEmail)
+	defer pool.Exec(context.Background(), `DELETE FROM users WHERE email = $1`, adminEmail)
+
+	big := append([]byte{0xFF, 0xD8, 0xFF}, make([]byte, 5<<20+1)...)
+	rec := multipartImageRequest(t, h, adminID, http.MethodPost, prod.ID, "", "big.jpg", big)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestProductUploadImageAcceptLargeUnderLimit(t *testing.T) {
+	h, pool := newProductHandler(t)
+	prod := seedProduct(t, pool, "Produk Gambar", 10000, 5, nil)
+	defer pool.Exec(context.Background(), `DELETE FROM products WHERE id = $1`, prod.ID)
+
+	adminEmail := "admin-img-4mb@example.com"
+	adminID := seedAdmin(t, pool, adminEmail)
+	defer pool.Exec(context.Background(), `DELETE FROM users WHERE email = $1`, adminEmail)
+
+	// ~5MB-1KB valid JPEG: below the 5MB file limit, but the multipart body
+	// (file + boundary/part overhead) exceeds 5MB. Regression test: the old
+	// MaxBytesReader(5MB) rejected this legal file; the limit must account
+	// for multipart overhead while the 5MB file check stays in the service.
+	img := append([]byte{0xFF, 0xD8, 0xFF}, make([]byte, (5<<20)-1024)...)
+	rec := multipartImageRequest(t, h, adminID, http.MethodPost, prod.ID, "", "large.jpg", img)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201, body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestProductUploadImageUnauthorized(t *testing.T) {
+	h, _ := newProductHandler(t)
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	mw.Close()
+	req := httptest.NewRequest(http.MethodPost, "/admin/products/x/images", &buf)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	req.SetPathValue("id", "x")
+	rec := httptest.NewRecorder()
+	auth := middleware.RequireAuth(jwtpkg.New("test-secret", jwtpkg.DefaultTTL))
+	auth(middleware.RequireRole("admin")(http.HandlerFunc(h.UploadImage))).ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rec.Code)
+	}
+}
+
+func TestProductDeleteImage(t *testing.T) {
+	h, pool := newProductHandler(t)
+	prod := seedProduct(t, pool, "Produk Gambar", 10000, 5, nil)
+	defer pool.Exec(context.Background(), `DELETE FROM products WHERE id = $1`, prod.ID)
+
+	imgID := seedProductImage(t, pool, prod.ID, "https://img.example.com/x.png", false, 0)
+	defer pool.Exec(context.Background(), `DELETE FROM product_images WHERE id = $1`, imgID)
+
+	adminEmail := "admin-img-del@example.com"
+	adminID := seedAdmin(t, pool, adminEmail)
+	defer pool.Exec(context.Background(), `DELETE FROM users WHERE email = $1`, adminEmail)
+
+	rec := multipartImageRequest(t, h, adminID, http.MethodDelete, prod.ID, imgID, "", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	}
+
+	var n int
+	pool.QueryRow(context.Background(), `SELECT count(*) FROM product_images WHERE id = $1`, imgID).Scan(&n)
+	if n != 0 {
+		t.Error("image row must be deleted from DB")
+	}
+}
+
+func TestProductDeleteImageNotFound(t *testing.T) {
+	h, pool := newProductHandler(t)
+	prod := seedProduct(t, pool, "Produk Gambar", 10000, 5, nil)
+	defer pool.Exec(context.Background(), `DELETE FROM products WHERE id = $1`, prod.ID)
+
+	adminEmail := "admin-img-del404@example.com"
+	adminID := seedAdmin(t, pool, adminEmail)
+	defer pool.Exec(context.Background(), `DELETE FROM users WHERE email = $1`, adminEmail)
+
+	rec := multipartImageRequest(t, h, adminID, http.MethodDelete, prod.ID, "00000000-0000-0000-0000-000000000000", "", nil)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404, body: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "IMAGE_NOT_FOUND") {
+		t.Errorf("body = %s, want IMAGE_NOT_FOUND", rec.Body.String())
 	}
 }
