@@ -327,7 +327,7 @@ func productPayload(p *model.Product) map[string]any {
 }
 
 // productPublicPayload is the public listing shape (PRD E): includes category
-// object and primary_image. Images arrive in T7 — null until then.
+// object and primary_image.
 func productPublicPayload(p *model.Product) map[string]any {
 	var category map[string]any
 	if p.Category != nil && p.Category.ID != "" {
@@ -342,7 +342,7 @@ func productPublicPayload(p *model.Product) map[string]any {
 		"price":         p.Price,
 		"stock":         p.Stock,
 		"is_active":     p.IsActive,
-		"primary_image": nil,
+		"primary_image": p.PrimaryImage,
 		"category":      category,
 	}
 }

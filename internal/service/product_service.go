@@ -125,8 +125,7 @@ func (s *ProductService) UploadImage(ctx context.Context, productID string, file
 		return nil, fmt.Errorf("%w: %v", ErrStorageFailure, err)
 	}
 
-	order := 0
-	img, err := s.products.CreateImage(ctx, productID, url, order)
+	img, err := s.products.CreateImage(ctx, productID, url)
 	if err != nil {
 		return nil, err
 	}

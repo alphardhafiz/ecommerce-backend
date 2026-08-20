@@ -132,3 +132,99 @@ func TestProductRepoFindByIDNotFound(t *testing.T) {
 		t.Errorf("FindByID() error = %v, want ErrNotFound", err)
 	}
 }
+
+func TestProductRepoAutoPrimaryImage(t *testing.T) {
+	ctx := context.Background()
+	repo := NewProductRepo(newTestPool(t))
+
+	p, err := repo.Create(ctx, "Produk Primary", nil, 10000, 5, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.pool.Exec(ctx, `DELETE FROM products WHERE id = $1`, p.ID)
+	defer repo.pool.Exec(ctx, `DELETE FROM product_images WHERE product_id = $1`, p.ID)
+
+	first, err := repo.CreateImage(ctx, p.ID, "https://img.example.com/1.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !first.IsPrimary {
+		t.Error("first image must be is_primary=true")
+	}
+	if first.DisplayOrder != 0 {
+		t.Errorf("first display_order = %d, want 0", first.DisplayOrder)
+	}
+
+	second, err := repo.CreateImage(ctx, p.ID, "https://img.example.com/2.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.IsPrimary {
+		t.Error("second image must be is_primary=false")
+	}
+	if second.DisplayOrder != 1 {
+		t.Errorf("second display_order = %d, want 1", second.DisplayOrder)
+	}
+}
+
+func TestProductRepoDeletePrimaryPromotesNext(t *testing.T) {
+	ctx := context.Background()
+	repo := NewProductRepo(newTestPool(t))
+
+	p, err := repo.Create(ctx, "Produk Promote", nil, 10000, 5, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.pool.Exec(ctx, `DELETE FROM products WHERE id = $1`, p.ID)
+	defer repo.pool.Exec(ctx, `DELETE FROM product_images WHERE product_id = $1`, p.ID)
+
+	first, _ := repo.CreateImage(ctx, p.ID, "https://img.example.com/1.png")
+	second, _ := repo.CreateImage(ctx, p.ID, "https://img.example.com/2.png")
+
+	if err := repo.DeleteImage(ctx, p.ID, first.ID); err != nil {
+		t.Fatalf("DeleteImage() error: %v", err)
+	}
+
+	got, err := repo.FindImage(ctx, p.ID, second.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.IsPrimary {
+		t.Error("after deleting primary, next image must be promoted to primary")
+	}
+}
+
+func TestProductRepoDeleteNonPrimaryKeepsPrimary(t *testing.T) {
+	ctx := context.Background()
+	repo := NewProductRepo(newTestPool(t))
+
+	p, err := repo.Create(ctx, "Produk Keep", nil, 10000, 5, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.pool.Exec(ctx, `DELETE FROM products WHERE id = $1`, p.ID)
+	defer repo.pool.Exec(ctx, `DELETE FROM product_images WHERE product_id = $1`, p.ID)
+
+	first, _ := repo.CreateImage(ctx, p.ID, "https://img.example.com/1.png")
+	second, _ := repo.CreateImage(ctx, p.ID, "https://img.example.com/2.png")
+
+	if err := repo.DeleteImage(ctx, p.ID, second.ID); err != nil {
+		t.Fatalf("DeleteImage() error: %v", err)
+	}
+
+	got, err := repo.FindImage(ctx, p.ID, first.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.IsPrimary {
+		t.Error("deleting a non-primary image must not change the primary")
+	}
+}
+
+func TestProductRepoDeleteImageNotFound(t *testing.T) {
+	repo := NewProductRepo(newTestPool(t))
+	err := repo.DeleteImage(context.Background(), "00000000-0000-0000-0000-000000000000", "00000000-0000-0000-0000-000000000000")
+	if !errors.Is(err, ErrImageNotFound) {
+		t.Errorf("DeleteImage() error = %v, want ErrImageNotFound", err)
+	}
+}

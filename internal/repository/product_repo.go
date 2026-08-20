@@ -155,7 +155,7 @@ type ProductFilter struct {
 	Offset     int
 }
 
-const publicProductColumns = `p.id, p.category_id, p.name, p.description, p.price::bigint, p.stock, p.is_active, p.deleted_at, p.created_at, p.updated_at, c.id, c.name`
+const publicProductColumns = `p.id, p.category_id, p.name, p.description, p.price::bigint, p.stock, p.is_active, p.deleted_at, p.created_at, p.updated_at, c.id, c.name, (SELECT pi.url FROM product_images pi WHERE pi.product_id = p.id AND pi.is_primary = true LIMIT 1)`
 
 // ListPublic returns non-deleted, active products matching the filter, with
 // category joined in and the total count for pagination meta. Empty filter
@@ -228,7 +228,7 @@ func (r *ProductRepo) ListPublic(ctx context.Context, f ProductFilter) ([]*model
 func scanPublicProduct(row rowScanner) (*model.Product, error) {
 	p := &model.Product{}
 	var catID, catName *string
-	err := row.Scan(&p.ID, &p.CategoryID, &p.Name, &p.Description, &p.Price, &p.Stock, &p.IsActive, &p.DeletedAt, &p.CreatedAt, &p.UpdatedAt, &catID, &catName)
+	err := row.Scan(&p.ID, &p.CategoryID, &p.Name, &p.Description, &p.Price, &p.Stock, &p.IsActive, &p.DeletedAt, &p.CreatedAt, &p.UpdatedAt, &catID, &catName, &p.PrimaryImage)
 	if err != nil {
 		return nil, err
 	}
@@ -295,13 +295,19 @@ func mapProductError(err error) error {
 
 var ErrImageNotFound = errors.New("product image does not exist")
 
-// CreateImage inserts a product image and returns it.
-func (r *ProductRepo) CreateImage(ctx context.Context, productID, url string, displayOrder int) (*model.ProductImage, error) {
+// CreateImage inserts a product image. The first image of a product becomes
+// is_primary=true; display_order increments automatically for stable order.
+// ponytail: a rare concurrent double-upload could both see "no images" and
+// both become primary — acceptable for a single-admin MVP; upgrade with a
+// partial unique index on is_primary if it ever matters.
+func (r *ProductRepo) CreateImage(ctx context.Context, productID, url string) (*model.ProductImage, error) {
 	row := r.pool.QueryRow(ctx,
-		`INSERT INTO product_images (product_id, url, display_order)
-		 VALUES ($1, $2, $3)
+		`INSERT INTO product_images (product_id, url, display_order, is_primary)
+		 SELECT $1, $2,
+		        COALESCE((SELECT max(display_order)+1 FROM product_images WHERE product_id = $1), 0),
+		        NOT EXISTS (SELECT 1 FROM product_images WHERE product_id = $1)
 		 RETURNING id, url, is_primary, display_order, created_at`,
-		productID, url, displayOrder)
+		productID, url)
 
 	img := &model.ProductImage{}
 	if err := row.Scan(&img.ID, &img.URL, &img.IsPrimary, &img.DisplayOrder, &img.CreatedAt); err != nil {
@@ -328,16 +334,38 @@ func (r *ProductRepo) FindImage(ctx context.Context, productID, imageID string) 
 	return img, nil
 }
 
-// DeleteImage removes the image row from the DB (storage object is removed by
-// the service).
+// DeleteImage removes the image row and, if it was the primary, promotes the
+// next image (lowest display_order/created_at) to primary — all in one
+// transaction. The storage object is removed by the service.
 func (r *ProductRepo) DeleteImage(ctx context.Context, productID, imageID string) error {
-	tag, err := r.pool.Exec(ctx,
-		`DELETE FROM product_images WHERE id = $1 AND product_id = $2`, imageID, productID)
+	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
-	if tag.RowsAffected() == 0 {
-		return ErrImageNotFound
+	defer tx.Rollback(ctx)
+
+	var wasPrimary bool
+	if err := tx.QueryRow(ctx,
+		`DELETE FROM product_images WHERE id = $1 AND product_id = $2 RETURNING is_primary`,
+		imageID, productID).Scan(&wasPrimary); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrImageNotFound
+		}
+		return err
 	}
-	return nil
+
+	if wasPrimary {
+		if _, err := tx.Exec(ctx,
+			`UPDATE product_images
+			 SET is_primary = true
+			 WHERE product_id = $1
+			   AND id = (SELECT id FROM product_images
+			             WHERE product_id = $1
+			             ORDER BY display_order, created_at
+			             LIMIT 1)`, productID); err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit(ctx)
 }

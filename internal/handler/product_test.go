@@ -485,6 +485,45 @@ func TestProductListPublic(t *testing.T) {
 	}
 }
 
+func TestProductListShowsPrimaryImage(t *testing.T) {
+	h, pool := newProductHandler(t)
+	p1 := seedProduct(t, pool, "Produk Gambar Utama", 10000, 5, nil)
+	defer pool.Exec(context.Background(), `DELETE FROM products WHERE id = $1`, p1.ID)
+	p2 := seedProduct(t, pool, "Produk Tanpa Gambar", 10000, 5, nil)
+	defer pool.Exec(context.Background(), `DELETE FROM products WHERE id = $1`, p2.ID)
+
+	// seedProductImage inserts with explicit is_primary; create one primary
+	imgID := seedProductImage(t, pool, p1.ID, "https://img.example.com/main.png", true, 0)
+	defer pool.Exec(context.Background(), `DELETE FROM product_images WHERE id = $1`, imgID)
+
+	rec := listProductsRequest(t, h, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+
+	var body struct {
+		Data []struct {
+			ID         string  `json:"id"`
+			PrimaryImg *string `json:"primary_image"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range body.Data {
+		if item.ID == p1.ID {
+			if item.PrimaryImg == nil || *item.PrimaryImg != "https://img.example.com/main.png" {
+				t.Errorf("product with image: primary_image = %v, want main.png", item.PrimaryImg)
+			}
+		}
+		if item.ID == p2.ID {
+			if item.PrimaryImg != nil {
+				t.Errorf("product without image: primary_image = %v, want null", *item.PrimaryImg)
+			}
+		}
+	}
+}
+
 func TestProductListFilterSearch(t *testing.T) {
 	h, pool := newProductHandler(t)
 	// unique name so leftover dev data ("Kaos Polos") can't inflate the match
@@ -881,8 +920,9 @@ func TestProductUploadImageSuccess(t *testing.T) {
 	var body struct {
 		Success bool `json:"success"`
 		Data    struct {
-			ID  string `json:"id"`
-			URL string `json:"url"`
+			ID        string `json:"id"`
+			URL       string `json:"url"`
+			IsPrimary bool   `json:"is_primary"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
@@ -890,6 +930,9 @@ func TestProductUploadImageSuccess(t *testing.T) {
 	}
 	if !body.Success || body.Data.ID == "" || body.Data.URL == "" {
 		t.Errorf("body = %+v, want uploaded image with a URL", body.Data)
+	}
+	if !body.Data.IsPrimary {
+		t.Error("first uploaded image must be is_primary=true")
 	}
 	if strings.Contains(body.Data.URL, "foto.png") {
 		t.Error("URL must not contain original filename (UUID rename)")
@@ -1006,5 +1049,30 @@ func TestProductDeleteImageNotFound(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "IMAGE_NOT_FOUND") {
 		t.Errorf("body = %s, want IMAGE_NOT_FOUND", rec.Body.String())
+	}
+}
+
+func TestProductDeletePrimaryPromotesNext(t *testing.T) {
+	h, pool := newProductHandler(t)
+	prod := seedProduct(t, pool, "Produk Gambar", 10000, 5, nil)
+	defer pool.Exec(context.Background(), `DELETE FROM products WHERE id = $1`, prod.ID)
+	defer pool.Exec(context.Background(), `DELETE FROM product_images WHERE product_id = $1`, prod.ID)
+
+	first := seedProductImage(t, pool, prod.ID, "https://img.example.com/1.png", true, 0)
+	second := seedProductImage(t, pool, prod.ID, "https://img.example.com/2.png", false, 1)
+
+	adminEmail := "admin-img-promote@example.com"
+	adminID := seedAdmin(t, pool, adminEmail)
+	defer pool.Exec(context.Background(), `DELETE FROM users WHERE email = $1`, adminEmail)
+
+	rec := multipartImageRequest(t, h, adminID, http.MethodDelete, prod.ID, first, "", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	}
+
+	var isPrimary bool
+	pool.QueryRow(context.Background(), `SELECT is_primary FROM product_images WHERE id = $1`, second).Scan(&isPrimary)
+	if !isPrimary {
+		t.Error("after deleting primary image, next image must be promoted (is_primary=true)")
 	}
 }
