@@ -51,7 +51,7 @@ Pecahan task per fase mengikuti PRD §U (Development Roadmap). Sumber kebenaran:
 - [x] `GET /products` (pagination, search `ILIKE`, filter category/harga/stock, sort)
 - [x] `GET /products/:id` (detail + images + kategori)
 - [x] Upload image ke object storage (`internal/` client) + `POST/DELETE /admin/products/:id/images[/:imageId]` (validasi MIME/ukuran, rename UUID)
-- [ ] Test: listing filter/sort, soft delete tidak muncul di publik
+- [x] Test: listing filter/sort, soft delete tidak muncul di publik
 
 **DoD (PRD §U.3):** admin kelola produk lengkap dengan gambar; user bisa browse & search.
 
