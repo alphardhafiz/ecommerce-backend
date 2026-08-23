@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"ecommerce/server/internal/model"
@@ -74,4 +75,51 @@ func (r *CartRepo) ListItems(ctx context.Context, cartID string) ([]*model.CartI
 		items = append(items, item)
 	}
 	return items, rows.Err()
+}
+
+// FindItem returns a cart line by its id, joined with the owning cart's
+// user_id (for ownership checks) and the product's current stock. Returns
+// ErrNotFound when the line does not exist.
+func (r *CartRepo) FindItem(ctx context.Context, itemID string) (*model.CartItem, error) {
+	row := r.pool.QueryRow(ctx,
+		`SELECT ci.id, c.user_id, ci.cart_id, p.id, p.name, p.price::bigint,
+		        p.stock, ci.quantity
+		 FROM cart_items ci
+		 JOIN carts c ON c.id = ci.cart_id
+		 JOIN products p ON p.id = ci.product_id
+		 WHERE ci.id = $1`, itemID)
+
+	item := &model.CartItem{}
+	if err := row.Scan(&item.ID, &item.UserID, &item.CartID, &item.ProductID, &item.Name, &item.Price, &item.Stock, &item.Quantity); err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return item, nil
+}
+
+// UpdateQuantity sets a cart line's quantity.
+func (r *CartRepo) UpdateQuantity(ctx context.Context, itemID string, quantity int) error {
+	tag, err := r.pool.Exec(ctx,
+		`UPDATE cart_items SET quantity = $2, updated_at = now() WHERE id = $1`, itemID, quantity)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// RemoveItem deletes a cart line by its id.
+func (r *CartRepo) RemoveItem(ctx context.Context, itemID string) error {
+	_, err := r.pool.Exec(ctx, `DELETE FROM cart_items WHERE id = $1`, itemID)
+	return err
+}
+
+// Clear removes all lines from the cart.
+func (r *CartRepo) Clear(ctx context.Context, cartID string) error {
+	_, err := r.pool.Exec(ctx, `DELETE FROM cart_items WHERE cart_id = $1`, cartID)
+	return err
 }

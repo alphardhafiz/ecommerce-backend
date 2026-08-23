@@ -13,6 +13,8 @@ type Cart struct {
 // availability are computed on the fly from the DB (PRD C.6), never stored.
 type CartItem struct {
 	ID          string
+	UserID      string
+	CartID      string
 	ProductID   string
 	Name        string
 	Price       int64

@@ -73,7 +73,7 @@ func main() {
 	wishlistSvc := service.NewWishlistService(wishlistRepo)
 	wishlistHandler := handler.NewWishlist(wishlistSvc)
 	cartRepo := repository.NewCartRepo(pool)
-	cartSvc := service.NewCartService(cartRepo)
+	cartSvc := service.NewCartService(cartRepo, productRepo)
 	cartHandler := handler.NewCart(cartSvc)
 
 	mux := http.NewServeMux()
@@ -94,6 +94,10 @@ func main() {
 	mux.Handle("POST /wishlist", userRequired(http.HandlerFunc(wishlistHandler.Add)))
 	mux.Handle("DELETE /wishlist/{productId}", userRequired(http.HandlerFunc(wishlistHandler.Remove)))
 	mux.Handle("GET /cart", userRequired(http.HandlerFunc(cartHandler.Get)))
+	mux.Handle("POST /cart/items", userRequired(http.HandlerFunc(cartHandler.AddItem)))
+	mux.Handle("PATCH /cart/items/{id}", userRequired(http.HandlerFunc(cartHandler.UpdateItemQty)))
+	mux.Handle("DELETE /cart/items/{id}", userRequired(http.HandlerFunc(cartHandler.RemoveItem)))
+	mux.Handle("DELETE /cart", userRequired(http.HandlerFunc(cartHandler.Clear)))
 	adminRequired := func(next http.Handler) http.Handler {
 		return middleware.RequireAuth(jwtHelper)(middleware.RequireRole("admin")(next))
 	}

@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -28,7 +29,7 @@ func newCartHandler(t *testing.T) (*Cart, *pgxpool.Pool) {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	return NewCart(service.NewCartService(repository.NewCartRepo(pool))), pool
+	return NewCart(service.NewCartService(repository.NewCartRepo(pool), repository.NewProductRepo(pool))), pool
 }
 
 func cartRequest(t *testing.T, h *Cart, token string) *httptest.ResponseRecorder {
@@ -42,12 +43,18 @@ func cartRequest(t *testing.T, h *Cart, token string) *httptest.ResponseRecorder
 	return rec
 }
 
-func seedCartItem(t *testing.T, pool *pgxpool.Pool, cartID, productID string, qty int) {
+func seedCartItem(t *testing.T, pool *pgxpool.Pool, cartID, productID string, qty int) string {
 	t.Helper()
 	repo := repository.NewCartRepo(pool)
 	if err := repo.AddItem(context.Background(), cartID, productID, qty); err != nil {
 		t.Fatal(err)
 	}
+	var id string
+	if err := pool.QueryRow(context.Background(),
+		`SELECT id FROM cart_items WHERE cart_id = $1 AND product_id = $2`, cartID, productID).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	return id
 }
 
 func TestCartGetEmptyLazyCreates(t *testing.T) {
@@ -215,5 +222,253 @@ func TestCartGetUnauthorized(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "UNAUTHORIZED") {
 		t.Errorf("body = %s, want UNAUTHORIZED", rec.Body.String())
+	}
+}
+
+func cartItemRequest(t *testing.T, h *Cart, method, itemID, token, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	path := "/cart/items"
+	if itemID != "" {
+		path += "/" + itemID
+	}
+	req := httptest.NewRequest(method, path, bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	if itemID != "" {
+		req.SetPathValue("id", itemID)
+	}
+	rec := httptest.NewRecorder()
+	auth := middleware.RequireAuth(jwtpkg.New("test-secret", jwtpkg.DefaultTTL))
+	var hf func(http.ResponseWriter, *http.Request)
+	switch method {
+	case http.MethodPost:
+		hf = h.AddItem
+	case http.MethodPatch:
+		hf = h.UpdateItemQty
+	default:
+		hf = h.RemoveItem
+	}
+	auth(http.HandlerFunc(hf)).ServeHTTP(rec, req)
+	return rec
+}
+
+func cartClearRequest(t *testing.T, h *Cart, token string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodDelete, "/cart", nil)
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	rec := httptest.NewRecorder()
+	middleware.RequireAuth(jwtpkg.New("test-secret", jwtpkg.DefaultTTL))(http.HandlerFunc(h.Clear)).ServeHTTP(rec, req)
+	return rec
+}
+
+func TestCartAddItemMergesQuantity(t *testing.T) {
+	h, pool := newCartHandler(t)
+	email := "cart-add-item@example.com"
+	seedUser(t, pool, email, "abc12345", "active")
+	defer pool.Exec(context.Background(), `DELETE FROM users WHERE email = $1`, email)
+
+	var userID string
+	pool.QueryRow(context.Background(), `SELECT id FROM users WHERE email = $1`, email).Scan(&userID)
+	defer pool.Exec(context.Background(), `DELETE FROM carts WHERE user_id = $1`, userID)
+
+	prod := seedProduct(t, pool, "Produk Cart", 10000, 10, nil)
+	defer pool.Exec(context.Background(), `DELETE FROM products WHERE id = $1`, prod.ID)
+
+	token := userToken(t, userID, "user")
+
+	rec := cartItemRequest(t, h, http.MethodPost, "", token, `{"product_id":"`+prod.ID+`","quantity":2}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("add status = %d, want 201, body: %s", rec.Code, rec.Body.String())
+	}
+
+	rec = cartItemRequest(t, h, http.MethodPost, "", token, `{"product_id":"`+prod.ID+`","quantity":3}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("merge add status = %d, want 201", rec.Code)
+	}
+
+	var qty int
+	pool.QueryRow(context.Background(),
+		`SELECT ci.quantity FROM cart_items ci JOIN carts c ON c.id = ci.cart_id WHERE c.user_id = $1 AND ci.product_id = $2`,
+		userID, prod.ID).Scan(&qty)
+	if qty != 5 {
+		t.Errorf("quantity = %d, want 5 (merged)", qty)
+	}
+}
+
+func TestCartAddItemValidation(t *testing.T) {
+	h, pool := newCartHandler(t)
+	email := "cart-add-invalid@example.com"
+	seedUser(t, pool, email, "abc12345", "active")
+	defer pool.Exec(context.Background(), `DELETE FROM users WHERE email = $1`, email)
+
+	var userID string
+	pool.QueryRow(context.Background(), `SELECT id FROM users WHERE email = $1`, email).Scan(&userID)
+
+	token := userToken(t, userID, "user")
+
+	// quantity 0
+	rec := cartItemRequest(t, h, http.MethodPost, "", token, `{"product_id":"00000000-0000-0000-0000-000000000000","quantity":0}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("qty=0 status = %d, want 400", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "VALIDATION_ERROR") {
+		t.Errorf("body = %s, want VALIDATION_ERROR", rec.Body.String())
+	}
+
+	// missing product
+	rec = cartItemRequest(t, h, http.MethodPost, "", token, `{"product_id":"00000000-0000-0000-0000-000000000000","quantity":1}`)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("missing product status = %d, want 404", rec.Code)
+	}
+
+	// soft-deleted product
+	prod := seedProduct(t, pool, "Dihapus", 10000, 5, nil)
+	defer pool.Exec(context.Background(), `DELETE FROM products WHERE id = $1`, prod.ID)
+	prodRepo := repository.NewProductRepo(pool)
+	if err := prodRepo.SoftDelete(context.Background(), prod.ID); err != nil {
+		t.Fatal(err)
+	}
+	rec = cartItemRequest(t, h, http.MethodPost, "", token, `{"product_id":"`+prod.ID+`","quantity":1}`)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("soft-deleted product status = %d, want 404", rec.Code)
+	}
+}
+
+func TestCartUpdateQuantity(t *testing.T) {
+	h, pool := newCartHandler(t)
+	email := "cart-update-qty@example.com"
+	seedUser(t, pool, email, "abc12345", "active")
+	defer pool.Exec(context.Background(), `DELETE FROM users WHERE email = $1`, email)
+
+	var userID string
+	pool.QueryRow(context.Background(), `SELECT id FROM users WHERE email = $1`, email).Scan(&userID)
+
+	catRepo := repository.NewCartRepo(pool)
+	cart, err := catRepo.GetOrCreate(context.Background(), userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Exec(context.Background(), `DELETE FROM carts WHERE user_id = $1`, userID)
+
+	prod := seedProduct(t, pool, "Produk Qty", 10000, 5, nil)
+	defer pool.Exec(context.Background(), `DELETE FROM products WHERE id = $1`, prod.ID)
+
+	itemID := seedCartItem(t, pool, cart.ID, prod.ID, 2)
+
+	token := userToken(t, userID, "user")
+	rec := cartItemRequest(t, h, http.MethodPatch, itemID, token, `{"quantity":4}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("update status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	}
+
+	var qty int
+	pool.QueryRow(context.Background(), `SELECT quantity FROM cart_items WHERE id = $1`, itemID).Scan(&qty)
+	if qty != 4 {
+		t.Errorf("quantity = %d, want 4", qty)
+	}
+
+	// exceeds stock -> 400
+	rec = cartItemRequest(t, h, http.MethodPatch, itemID, token, `{"quantity":10}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("over-stock status = %d, want 400", rec.Code)
+	}
+
+	// quantity 0 -> 400
+	rec = cartItemRequest(t, h, http.MethodPatch, itemID, token, `{"quantity":0}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("qty=0 status = %d, want 400", rec.Code)
+	}
+}
+
+func TestCartUpdateQuantityForbidden(t *testing.T) {
+	h, pool := newCartHandler(t)
+	ownerEmail := "cart-owner@example.com"
+	otherEmail := "cart-other@example.com"
+	seedUser(t, pool, ownerEmail, "abc12345", "active")
+	seedUser(t, pool, otherEmail, "abc12345", "active")
+	defer pool.Exec(context.Background(), `DELETE FROM users WHERE email = ANY($1)`, []string{ownerEmail, otherEmail})
+
+	var ownerID, otherID string
+	pool.QueryRow(context.Background(), `SELECT id FROM users WHERE email = $1`, ownerEmail).Scan(&ownerID)
+	pool.QueryRow(context.Background(), `SELECT id FROM users WHERE email = $1`, otherEmail).Scan(&otherID)
+
+	catRepo := repository.NewCartRepo(pool)
+	cart, err := catRepo.GetOrCreate(context.Background(), ownerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Exec(context.Background(), `DELETE FROM carts WHERE user_id = $1`, ownerID)
+
+	prod := seedProduct(t, pool, "Produk Forbidden", 10000, 5, nil)
+	defer pool.Exec(context.Background(), `DELETE FROM products WHERE id = $1`, prod.ID)
+
+	itemID := seedCartItem(t, pool, cart.ID, prod.ID, 1)
+
+	// other user tries to update owner's item
+	rec := cartItemRequest(t, h, http.MethodPatch, itemID, userToken(t, otherID, "user"), `{"quantity":3}`)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rec.Code)
+	}
+}
+
+func TestCartRemoveItemAndClear(t *testing.T) {
+	h, pool := newCartHandler(t)
+	email := "cart-rm-clear@example.com"
+	seedUser(t, pool, email, "abc12345", "active")
+	defer pool.Exec(context.Background(), `DELETE FROM users WHERE email = $1`, email)
+
+	var userID string
+	pool.QueryRow(context.Background(), `SELECT id FROM users WHERE email = $1`, email).Scan(&userID)
+
+	catRepo := repository.NewCartRepo(pool)
+	cart, err := catRepo.GetOrCreate(context.Background(), userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Exec(context.Background(), `DELETE FROM carts WHERE user_id = $1`, userID)
+
+	p1 := seedProduct(t, pool, "Produk A", 10000, 5, nil)
+	defer pool.Exec(context.Background(), `DELETE FROM products WHERE id = $1`, p1.ID)
+	p2 := seedProduct(t, pool, "Produk B", 10000, 5, nil)
+	defer pool.Exec(context.Background(), `DELETE FROM products WHERE id = $1`, p2.ID)
+
+	item1 := seedCartItem(t, pool, cart.ID, p1.ID, 1)
+	item2 := seedCartItem(t, pool, cart.ID, p2.ID, 1)
+
+	token := userToken(t, userID, "user")
+
+	// remove one item
+	rec := cartItemRequest(t, h, http.MethodDelete, item1, token, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("remove status = %d, want 200", rec.Code)
+	}
+	var n int
+	pool.QueryRow(context.Background(), `SELECT count(*) FROM cart_items WHERE id = $1`, item1).Scan(&n)
+	if n != 0 {
+		t.Error("removed item must be deleted")
+	}
+
+	// clear rest
+	rec = cartClearRequest(t, h, token)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("clear status = %d, want 200", rec.Code)
+	}
+	pool.QueryRow(context.Background(), `SELECT count(*) FROM cart_items WHERE id = $1`, item2).Scan(&n)
+	if n != 0 {
+		t.Error("clear must remove remaining items")
+	}
+}
+
+func TestCartMutationsUnauthorized(t *testing.T) {
+	h, _ := newCartHandler(t)
+	if rec := cartItemRequest(t, h, http.MethodPost, "", "", `{"product_id":"x","quantity":1}`); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("add status = %d, want 401", rec.Code)
+	}
+	if rec := cartClearRequest(t, h, ""); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("clear status = %d, want 401", rec.Code)
 	}
 }
