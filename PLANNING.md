@@ -61,7 +61,7 @@ Pecahan task per fase mengikuti PRD §U (Development Roadmap). Sumber kebenaran:
 - [x] Cart lazy creation (1 user = 1 cart), repo cart + cart_items
 - [x] `GET /cart` (subtotal on-the-fly dari harga DB, flag `is_available`)
 - [x] `POST /cart/items` (merge quantity), `PATCH /cart/items/:id`, `DELETE /cart/items/:id`, `DELETE /cart`
-- [ ] Test: duplikat wishlist 409, item inactive `is_available:false` tidak masuk total
+- [x] Test: duplikat wishlist 409, item inactive `is_available:false` tidak masuk total
 
 **DoD (PRD §U.4):** wishlist & cart end-to-end, termasuk handling produk inactive/dihapus.
 

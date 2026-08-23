@@ -179,14 +179,20 @@ func TestCartGetExcludesUnavailableFromTotal(t *testing.T) {
 	defer pool.Exec(context.Background(), `DELETE FROM products WHERE id = $1`, good.ID)
 	inactive := seedProduct(t, pool, "Nonaktif", 50000, 5, nil)
 	defer pool.Exec(context.Background(), `DELETE FROM products WHERE id = $1`, inactive.ID)
+	deleted := seedProduct(t, pool, "Dihapus", 50000, 5, nil)
+	defer pool.Exec(context.Background(), `DELETE FROM products WHERE id = $1`, deleted.ID)
 
 	prodRepo := repository.NewProductRepo(pool)
 	if _, err := prodRepo.SetActive(context.Background(), inactive.ID, false); err != nil {
 		t.Fatal(err)
 	}
+	if err := prodRepo.SoftDelete(context.Background(), deleted.ID); err != nil {
+		t.Fatal(err)
+	}
 
 	seedCartItem(t, pool, cart.ID, good.ID, 3)
 	seedCartItem(t, pool, cart.ID, inactive.ID, 2)
+	seedCartItem(t, pool, cart.ID, deleted.ID, 1)
 
 	rec := cartRequest(t, h, userToken(t, userID, "user"))
 	var body struct {
@@ -201,15 +207,15 @@ func TestCartGetExcludesUnavailableFromTotal(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if len(body.Data.Items) != 2 {
-		t.Fatalf("items = %+v, want both listed", body.Data.Items)
+	if len(body.Data.Items) != 3 {
+		t.Fatalf("items = %+v, want all 3 listed (flagged)", body.Data.Items)
 	}
 	if body.Data.Total != 30000 {
 		t.Errorf("total = %d, want 30000 (only available item: 10000*3)", body.Data.Total)
 	}
 	for _, item := range body.Data.Items {
-		if item.ProductID == inactive.ID && item.IsAvailable {
-			t.Error("inactive product must be is_available=false")
+		if (item.ProductID == inactive.ID || item.ProductID == deleted.ID) && item.IsAvailable {
+			t.Errorf("product %s must be is_available=false", item.ProductID)
 		}
 	}
 }
