@@ -69,6 +69,9 @@ func main() {
 	productSvc := service.NewProductService(productRepo).WithStorage(
 		storage.New(cfg.StorageEndpoint, cfg.StorageBucket, cfg.StorageAccessKeyID, cfg.StorageSecretAccessKey))
 	productHandler := handler.NewProduct(productSvc)
+	wishlistRepo := repository.NewWishlistRepo(pool)
+	wishlistSvc := service.NewWishlistService(wishlistRepo)
+	wishlistHandler := handler.NewWishlist(wishlistSvc)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", health.Liveness)
@@ -81,6 +84,12 @@ func main() {
 	mux.HandleFunc("POST /auth/reset-password", auth.ResetPassword)
 	mux.Handle("GET /users/me", middleware.RequireAuth(jwtHelper)(http.HandlerFunc(userHandler.Me)))
 	mux.Handle("PATCH /users/me", middleware.RequireAuth(jwtHelper)(http.HandlerFunc(userHandler.UpdateMe)))
+	userRequired := func(next http.Handler) http.Handler {
+		return middleware.RequireAuth(jwtHelper)(next)
+	}
+	mux.Handle("GET /wishlist", userRequired(http.HandlerFunc(wishlistHandler.List)))
+	mux.Handle("POST /wishlist", userRequired(http.HandlerFunc(wishlistHandler.Add)))
+	mux.Handle("DELETE /wishlist/{productId}", userRequired(http.HandlerFunc(wishlistHandler.Remove)))
 	adminRequired := func(next http.Handler) http.Handler {
 		return middleware.RequireAuth(jwtHelper)(middleware.RequireRole("admin")(next))
 	}

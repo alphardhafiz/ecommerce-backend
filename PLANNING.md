@@ -57,7 +57,7 @@ Pecahan task per fase mengikuti PRD §U (Development Roadmap). Sumber kebenaran:
 
 ## Fase 4 — Wishlist + cart
 
-- [ ] `GET/POST/DELETE /wishlist[/:productId]` (unique constraint → 409, exclude soft-deleted)
+- [x] `GET/POST/DELETE /wishlist[/:productId]` (unique constraint → 409, exclude soft-deleted)
 - [ ] Cart lazy creation (1 user = 1 cart), repo cart + cart_items
 - [ ] `GET /cart` (subtotal on-the-fly dari harga DB, flag `is_available`)
 - [ ] `POST /cart/items` (merge quantity), `PATCH /cart/items/:id`, `DELETE /cart/items/:id`, `DELETE /cart`
