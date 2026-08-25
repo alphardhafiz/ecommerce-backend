@@ -52,7 +52,9 @@ func (r *WishlistRepo) Add(ctx context.Context, userID, productID string) error 
 // products are excluded (PRD C.5).
 func (r *WishlistRepo) List(ctx context.Context, userID string) ([]*model.WishlistItem, error) {
 	rows, err := r.pool.Query(ctx,
-		`SELECT p.id, p.name, p.price::bigint, p.stock, p.is_active, w.created_at
+		`SELECT p.id, p.name, p.price::bigint, p.stock, p.is_active,
+		        (SELECT pi.url FROM product_images pi WHERE pi.product_id = p.id AND pi.is_primary = true LIMIT 1),
+		        w.created_at
 		 FROM wishlists w
 		 JOIN products p ON p.id = w.product_id
 		 WHERE w.user_id = $1 AND p.deleted_at IS NULL
@@ -65,7 +67,7 @@ func (r *WishlistRepo) List(ctx context.Context, userID string) ([]*model.Wishli
 	var items []*model.WishlistItem
 	for rows.Next() {
 		item := &model.WishlistItem{}
-		if err := rows.Scan(&item.ProductID, &item.ProductName, &item.Price, &item.Stock, &item.IsActive, &item.AddedAt); err != nil {
+		if err := rows.Scan(&item.ProductID, &item.ProductName, &item.Price, &item.Stock, &item.IsActive, &item.PrimaryImage, &item.AddedAt); err != nil {
 			return nil, err
 		}
 		item.InStock = item.Stock > 0

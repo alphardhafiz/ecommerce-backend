@@ -103,12 +103,13 @@ func (w *Wishlist) Remove(wr http.ResponseWriter, r *http.Request) {
 
 func wishlistPayload(item *model.WishlistItem) map[string]any {
 	return map[string]any{
-		"product_id":   item.ProductID,
-		"product_name": item.ProductName,
-		"price":        item.Price,
-		"stock":        item.Stock,
-		"in_stock":     item.InStock,
-		"is_active":    item.IsActive,
-		"added_at":     item.AddedAt,
+		"product_id":    item.ProductID,
+		"product_name":  item.ProductName,
+		"price":         item.Price,
+		"stock":         item.Stock,
+		"in_stock":      item.InStock,
+		"is_active":     item.IsActive,
+		"primary_image": item.PrimaryImage,
+		"added_at":      item.AddedAt,
 	}
 }
