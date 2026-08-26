@@ -75,6 +75,9 @@ func main() {
 	cartRepo := repository.NewCartRepo(pool)
 	cartSvc := service.NewCartService(cartRepo, productRepo)
 	cartHandler := handler.NewCart(cartSvc)
+	addressRepo := repository.NewAddressRepo(pool)
+	addressSvc := service.NewAddressService(addressRepo)
+	addressHandler := handler.NewAddress(addressSvc)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", health.Liveness)
@@ -98,6 +101,11 @@ func main() {
 	mux.Handle("PATCH /cart/items/{id}", userRequired(http.HandlerFunc(cartHandler.UpdateItemQty)))
 	mux.Handle("DELETE /cart/items/{id}", userRequired(http.HandlerFunc(cartHandler.RemoveItem)))
 	mux.Handle("DELETE /cart", userRequired(http.HandlerFunc(cartHandler.Clear)))
+	mux.Handle("GET /addresses", userRequired(http.HandlerFunc(addressHandler.List)))
+	mux.Handle("POST /addresses", userRequired(http.HandlerFunc(addressHandler.Create)))
+	mux.Handle("PUT /addresses/{id}", userRequired(http.HandlerFunc(addressHandler.Update)))
+	mux.Handle("DELETE /addresses/{id}", userRequired(http.HandlerFunc(addressHandler.Delete)))
+	mux.Handle("PATCH /addresses/{id}/default", userRequired(http.HandlerFunc(addressHandler.SetDefault)))
 	adminRequired := func(next http.Handler) http.Handler {
 		return middleware.RequireAuth(jwtHelper)(middleware.RequireRole("admin")(next))
 	}

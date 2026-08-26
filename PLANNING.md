@@ -67,7 +67,7 @@ Pecahan task per fase mengikuti PRD §U (Development Roadmap). Sumber kebenaran:
 
 ## Fase 5 — Address + order (tanpa payment)
 
-- [ ] CRUD `/addresses` + `PATCH /addresses/:id/default` (satu default, transaction)
+- [x] CRUD `/addresses` + `PATCH /addresses/:id/default` (satu default, transaction)
 - [ ] `POST /orders/checkout`: DB transaction, `SELECT ... FOR UPDATE` (urutan kunci konsisten), validasi ulang harga/stock/is_active, snapshot address & order_items, kurangi stock, hapus cart items, payment stub
 - [ ] `GET /orders` (pagination, milik sendiri), `GET /orders/:id` (ownership check → 403)
 - [ ] `POST /orders/:id/cancel` (hanya PENDING, stock kembali dalam transaction)
