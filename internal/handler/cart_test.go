@@ -220,6 +220,60 @@ func TestCartGetExcludesUnavailableFromTotal(t *testing.T) {
 	}
 }
 
+func TestCartGetIncludesPrimaryImage(t *testing.T) {
+	h, pool := newCartHandler(t)
+	email := "cart-img@example.com"
+	seedUser(t, pool, email, "abc12345", "active")
+	defer pool.Exec(context.Background(), `DELETE FROM users WHERE email = $1`, email)
+
+	var userID string
+	pool.QueryRow(context.Background(), `SELECT id FROM users WHERE email = $1`, email).Scan(&userID)
+
+	catRepo := repository.NewCartRepo(pool)
+	cart, err := catRepo.GetOrCreate(context.Background(), userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Exec(context.Background(), `DELETE FROM carts WHERE user_id = $1`, userID)
+
+	withImg := seedProduct(t, pool, "Dengan Gambar", 10000, 5, nil)
+	defer pool.Exec(context.Background(), `DELETE FROM products WHERE id = $1`, withImg.ID)
+	noImg := seedProduct(t, pool, "Tanpa Gambar", 20000, 5, nil)
+	defer pool.Exec(context.Background(), `DELETE FROM products WHERE id = $1`, noImg.ID)
+
+	seedProductImage(t, pool, withImg.ID, "https://example.com/img.png", true, 0)
+	seedCartItem(t, pool, cart.ID, withImg.ID, 1)
+	seedCartItem(t, pool, cart.ID, noImg.ID, 1)
+
+	rec := cartRequest(t, h, userToken(t, userID, "user"))
+	var body struct {
+		Data struct {
+			Items []struct {
+				ProductID    string  `json:"product_id"`
+				PrimaryImage *string `json:"primary_image"`
+			} `json:"items"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Data.Items) != 2 {
+		t.Fatalf("items = %d, want 2", len(body.Data.Items))
+	}
+	for _, item := range body.Data.Items {
+		switch item.ProductID {
+		case withImg.ID:
+			if item.PrimaryImage == nil || *item.PrimaryImage != "https://example.com/img.png" {
+				t.Errorf("primary_image = %v, want image URL", item.PrimaryImage)
+			}
+		case noImg.ID:
+			if item.PrimaryImage != nil {
+				t.Errorf("primary_image = %v, want null", item.PrimaryImage)
+			}
+		}
+	}
+}
+
 func TestCartGetUnauthorized(t *testing.T) {
 	h, _ := newCartHandler(t)
 	rec := cartRequest(t, h, "")

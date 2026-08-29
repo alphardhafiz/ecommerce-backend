@@ -52,7 +52,8 @@ func (r *CartRepo) AddItem(ctx context.Context, cartID, productID string, quanti
 func (r *CartRepo) ListItems(ctx context.Context, cartID string) ([]*model.CartItem, error) {
 	rows, err := r.pool.Query(ctx,
 		`SELECT ci.id, p.id, p.name, p.price::bigint, p.stock, ci.quantity,
-		        p.is_active, p.deleted_at IS NOT NULL
+		        p.is_active, p.deleted_at IS NOT NULL,
+		        (SELECT pi.url FROM product_images pi WHERE pi.product_id = p.id AND pi.is_primary = true LIMIT 1)
 		 FROM cart_items ci
 		 JOIN products p ON p.id = ci.product_id
 		 WHERE ci.cart_id = $1
@@ -67,7 +68,7 @@ func (r *CartRepo) ListItems(ctx context.Context, cartID string) ([]*model.CartI
 		item := &model.CartItem{}
 		var isActive bool
 		var isDeleted bool
-		if err := rows.Scan(&item.ID, &item.ProductID, &item.Name, &item.Price, &item.Stock, &item.Quantity, &isActive, &isDeleted); err != nil {
+		if err := rows.Scan(&item.ID, &item.ProductID, &item.Name, &item.Price, &item.Stock, &item.Quantity, &isActive, &isDeleted, &item.PrimaryImage); err != nil {
 			return nil, err
 		}
 		item.Subtotal = item.Price * int64(item.Quantity)

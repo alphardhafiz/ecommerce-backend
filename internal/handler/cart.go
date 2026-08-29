@@ -161,12 +161,13 @@ func (c *Cart) respondError(w http.ResponseWriter, err error) {
 
 func cartItemPayload(item *model.CartItem) map[string]any {
 	return map[string]any{
-		"id":           item.ID,
-		"product_id":   item.ProductID,
-		"name":         item.Name,
-		"price":        item.Price,
-		"quantity":     item.Quantity,
-		"subtotal":     item.Subtotal,
-		"is_available": item.IsAvailable,
+		"id":            item.ID,
+		"product_id":    item.ProductID,
+		"name":          item.Name,
+		"price":         item.Price,
+		"quantity":      item.Quantity,
+		"subtotal":      item.Subtotal,
+		"is_available":  item.IsAvailable,
+		"primary_image": item.PrimaryImage,
 	}
 }
