@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"ecommerce/server/internal/middleware"
 	"ecommerce/server/internal/payment"
 	"ecommerce/server/internal/repository"
 	"ecommerce/server/internal/service"
@@ -85,4 +86,38 @@ func (p *Payment) Webhook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respondJSON(w, http.StatusOK, map[string]any{"success": true, "data": nil})
+}
+
+// Get returns the payment status of the user's own order (PRD E,
+// ownership per PRD S.6).
+func (p *Payment) Get(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.ClaimsFrom(r.Context())
+	if !ok {
+		respondError(w, http.StatusUnauthorized, "Unauthorized", "UNAUTHORIZED", nil)
+		return
+	}
+
+	pay, err := p.svc.GetPayment(r.Context(), claims.UserID, r.PathValue("id"))
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrForbidden):
+			respondError(w, http.StatusForbidden, "Forbidden", "FORBIDDEN", nil)
+		case errors.Is(err, repository.ErrNotFound), errors.Is(err, repository.ErrPaymentNotFound):
+			respondError(w, http.StatusNotFound, "Payment not found", "NOT_FOUND", nil)
+		default:
+			respondError(w, http.StatusInternalServerError, "Internal server error", "INTERNAL_ERROR", nil)
+		}
+		return
+	}
+
+	respondJSON(w, http.StatusOK, map[string]any{
+		"success": true,
+		"data": map[string]any{
+			"order_id":     pay.OrderID,
+			"status":       pay.Status,
+			"amount":       pay.Amount,
+			"payment_type": pay.PaymentType,
+			"paid_at":      pay.PaidAt,
+		},
+	})
 }

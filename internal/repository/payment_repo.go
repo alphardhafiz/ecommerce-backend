@@ -7,6 +7,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"ecommerce/server/internal/model"
 )
 
 var ErrPaymentNotFound = errors.New("payment not found")
@@ -17,6 +19,23 @@ type PaymentRepo struct {
 
 func NewPaymentRepo(pool *pgxpool.Pool) *PaymentRepo {
 	return &PaymentRepo{pool: pool}
+}
+
+const paymentCols = `id, order_id, midtrans_order_id, status, amount::bigint, payment_type, paid_at, created_at, updated_at`
+
+// GetByOrderID returns the payment of an order. Every checkout creates one
+// (T2), so this should always exist; returns ErrPaymentNotFound otherwise.
+func (r *PaymentRepo) GetByOrderID(ctx context.Context, orderID string) (*model.Payment, error) {
+	p := &model.Payment{}
+	if err := r.pool.QueryRow(ctx,
+		`SELECT `+paymentCols+` FROM payments WHERE order_id = $1`, orderID).
+		Scan(&p.ID, &p.OrderID, &p.MidtransOrderID, &p.Status, &p.Amount, &p.PaymentType, &p.PaidAt, &p.CreatedAt, &p.UpdatedAt); err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, ErrPaymentNotFound
+		}
+		return nil, err
+	}
+	return p, nil
 }
 
 // ProcessNotification applies a webhook delivery in one transaction (PRD

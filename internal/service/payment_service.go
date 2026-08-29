@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 
+	"ecommerce/server/internal/model"
 	"ecommerce/server/internal/payment"
 	"ecommerce/server/internal/repository"
 )
@@ -24,10 +25,25 @@ var midtransStatusMap = map[string]string{
 
 type PaymentService struct {
 	payments *repository.PaymentRepo
+	orders   *repository.OrderRepo
 }
 
-func NewPaymentService(payments *repository.PaymentRepo) *PaymentService {
-	return &PaymentService{payments: payments}
+func NewPaymentService(payments *repository.PaymentRepo, orders *repository.OrderRepo) *PaymentService {
+	return &PaymentService{payments: payments, orders: orders}
+}
+
+// GetPayment returns the payment of a user's order. Returns ErrForbidden
+// for another user's order (PRD S.6) and ErrNotFound for a missing order
+// or payment.
+func (s *PaymentService) GetPayment(ctx context.Context, userID, orderID string) (*model.Payment, error) {
+	order, err := s.orders.GetByID(ctx, orderID)
+	if err != nil {
+		return nil, err
+	}
+	if order.UserID != userID {
+		return nil, ErrForbidden
+	}
+	return s.payments.GetByOrderID(ctx, orderID)
 }
 
 // ProcessNotification applies a verified webhook notification

@@ -15,6 +15,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	jwtpkg "ecommerce/server/internal/jwt"
+	"ecommerce/server/internal/middleware"
 	"ecommerce/server/internal/payment"
 	"ecommerce/server/internal/repository"
 	"ecommerce/server/internal/service"
@@ -67,7 +69,7 @@ func webhookPaymentHandler(t *testing.T, gw PaymentGateway) (*Payment, *pgxpool.
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	return NewPayment(gw, service.NewPaymentService(repository.NewPaymentRepo(pool))), pool
+	return NewPayment(gw, service.NewPaymentService(repository.NewPaymentRepo(pool), repository.NewOrderRepo(pool))), pool
 }
 
 // seedPayment inserts a user, product (stock 5), order (PENDING) with one
@@ -344,5 +346,79 @@ func TestWebhookUnknownOrderStillOK(t *testing.T) {
 	rec := webhookRequest(t, h, signedWebhookBody("00000000-0000-0000-0000-000000000000", "settlement"))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (stop Midtrans retries, PRD S.7)", rec.Code)
+	}
+}
+
+func paymentRequest(t *testing.T, h *Payment, orderID, token string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/orders/"+orderID+"/payment", nil)
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	req.SetPathValue("id", orderID)
+	rec := httptest.NewRecorder()
+	middleware.RequireAuth(jwtpkg.New("test-secret", jwtpkg.DefaultTTL))(http.HandlerFunc(h.Get)).ServeHTTP(rec, req)
+	return rec
+}
+
+func TestPaymentGetOwned(t *testing.T) {
+	h, pool := webhookPaymentHandler(t, stubGateway{})
+	orderID, prodID := seedPayment(t, pool, "pay-get@example.com")
+	defer cleanupWebhookOrder(pool, orderID, "pay-get@example.com")
+	defer pool.Exec(context.Background(), `DELETE FROM products WHERE id = $1`, prodID)
+
+	var userID string
+	pool.QueryRow(context.Background(), `SELECT id FROM users WHERE email = 'pay-get@example.com'`).Scan(&userID)
+
+	rec := paymentRequest(t, h, orderID, userToken(t, userID, "user"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body: %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Data struct {
+			OrderID string `json:"order_id"`
+			Status  string `json:"status"`
+			Amount  int64  `json:"amount"`
+			PaidAt  any    `json:"paid_at"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Data.OrderID != orderID || body.Data.Status != "PENDING" || body.Data.Amount != 100000 {
+		t.Errorf("payment = %+v, want order %s PENDING 100000", body.Data, orderID)
+	}
+	if body.Data.PaidAt != nil {
+		t.Error("paid_at must be null for a PENDING payment")
+	}
+}
+
+func TestPaymentGetForbidden(t *testing.T) {
+	h, pool := webhookPaymentHandler(t, stubGateway{})
+	orderID, prodID := seedPayment(t, pool, "pay-owner@example.com")
+	defer cleanupWebhookOrder(pool, orderID, "pay-owner@example.com")
+	defer pool.Exec(context.Background(), `DELETE FROM products WHERE id = $1`, prodID)
+
+	seedUser(t, pool, "pay-other@example.com", "abc12345", "active")
+	defer pool.Exec(context.Background(), `DELETE FROM users WHERE email = 'pay-other@example.com'`)
+	var otherID string
+	pool.QueryRow(context.Background(), `SELECT id FROM users WHERE email = 'pay-other@example.com'`).Scan(&otherID)
+
+	// other user -> 403
+	rec := paymentRequest(t, h, orderID, userToken(t, otherID, "user"))
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rec.Code)
+	}
+
+	// missing order -> 404
+	rec = paymentRequest(t, h, "00000000-0000-0000-0000-000000000000", userToken(t, otherID, "user"))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("missing order status = %d, want 404", rec.Code)
+	}
+
+	// no token -> 401
+	rec = paymentRequest(t, h, orderID, "")
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("no token status = %d, want 401", rec.Code)
 	}
 }
