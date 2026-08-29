@@ -186,6 +186,16 @@ func TestDashboardMetrics(t *testing.T) {
 		t.Errorf("7d revenue delta = %v, want 50000", got)
 	}
 
+	// period 30d: same as 7d here (COMPLETED is 40 days old)
+	rec = dashboardRequest(t, h, token, "?period=30d")
+	data = dashboardData(t, rec)
+	if got := n(data, "total_orders") - n(base, "total_orders"); got != 2 {
+		t.Errorf("30d total_orders delta = %v, want 2", got)
+	}
+	if got := n(data, "revenue") - n(base, "revenue"); got != 50000 {
+		t.Errorf("30d revenue delta = %v, want 50000", got)
+	}
+
 	// custom range covering only the old COMPLETED order
 	oldDay := time.Now().AddDate(0, 0, -41).Format("2006-01-02")
 	yesterday := time.Now().AddDate(0, 0, -1).Format("2006-01-02")
