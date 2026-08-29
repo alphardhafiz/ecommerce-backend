@@ -78,6 +78,9 @@ func main() {
 	addressRepo := repository.NewAddressRepo(pool)
 	addressSvc := service.NewAddressService(addressRepo)
 	addressHandler := handler.NewAddress(addressSvc)
+	orderRepo := repository.NewOrderRepo(pool)
+	orderSvc := service.NewOrderService(orderRepo)
+	orderHandler := handler.NewOrder(orderSvc)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", health.Liveness)
@@ -106,6 +109,7 @@ func main() {
 	mux.Handle("PUT /addresses/{id}", userRequired(http.HandlerFunc(addressHandler.Update)))
 	mux.Handle("DELETE /addresses/{id}", userRequired(http.HandlerFunc(addressHandler.Delete)))
 	mux.Handle("PATCH /addresses/{id}/default", userRequired(http.HandlerFunc(addressHandler.SetDefault)))
+	mux.Handle("POST /orders/checkout", userRequired(http.HandlerFunc(orderHandler.Checkout)))
 	adminRequired := func(next http.Handler) http.Handler {
 		return middleware.RequireAuth(jwtHelper)(middleware.RequireRole("admin")(next))
 	}
