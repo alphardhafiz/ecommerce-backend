@@ -19,15 +19,20 @@ func NewPaymentRepo(pool *pgxpool.Pool) *PaymentRepo {
 	return &PaymentRepo{pool: pool}
 }
 
-// ProcessNotification logs a webhook delivery and idempotently applies the
-// mapped payment status, all in one transaction (PRD F.2, C.10):
-//  1. lock the payments row (by midtrans_order_id)
-//  2. insert the payment_notifications audit row — every delivery is logged,
-//     duplicates included
-//  3. skip the status update when it already matches (duplicate delivery →
-//     no-op, caller still replies 200)
+// ProcessNotification applies a webhook delivery in one transaction (PRD
+// F.2, F.3, C.10): audit-log every delivery, then move payment + order
+// together — never one without the other.
 //
-// Returns changed=true when the payment status was actually updated.
+//   - payment PENDING + SUCCESS: payment SUCCESS + paid_at, order PENDING→PAID
+//   - payment PENDING + EXPIRED/CANCELLED: payment set, order PENDING→EXPIRED/
+//     CANCELLED and stock restored (PRD S.14)
+//   - payment PENDING + FAILED: payment FAILED, order stays PENDING (retry)
+//   - duplicate or late delivery (payment already at target, or already past
+//     PENDING): no-op — "set to final state" is idempotent, stock never
+//     returns twice
+//
+// The order transition is guarded by WHERE status = 'PENDING', so even a
+// concurrently-paid order is never double-moved.
 func (r *PaymentRepo) ProcessNotification(ctx context.Context, midtransOrderID string, raw json.RawMessage, status string) (bool, error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
@@ -35,10 +40,10 @@ func (r *PaymentRepo) ProcessNotification(ctx context.Context, midtransOrderID s
 	}
 	defer tx.Rollback(ctx)
 
-	var paymentID, current string
+	var paymentID, current, orderID string
 	if err := tx.QueryRow(ctx,
-		`SELECT id, status FROM payments WHERE midtrans_order_id = $1 FOR UPDATE`, midtransOrderID).
-		Scan(&paymentID, &current); err != nil {
+		`SELECT id, status, order_id FROM payments WHERE midtrans_order_id = $1 FOR UPDATE`, midtransOrderID).
+		Scan(&paymentID, &current, &orderID); err != nil {
 		if err == pgx.ErrNoRows {
 			return false, ErrPaymentNotFound
 		}
@@ -52,14 +57,53 @@ func (r *PaymentRepo) ProcessNotification(ctx context.Context, midtransOrderID s
 		return false, err
 	}
 
-	if current == status {
+	// Idempotent no-op: already at target (duplicate delivery), or the
+	// payment already left PENDING (final state; a late webhook must not
+	// downgrade it, PRD S.7 anomaly).
+	if current == status || current != "PENDING" {
 		return false, tx.Commit(ctx)
 	}
 
-	if _, err := tx.Exec(ctx,
-		`UPDATE payments SET status = $2, updated_at = now() WHERE id = $1`,
-		paymentID, status); err != nil {
-		return false, err
+	switch status {
+	case "SUCCESS":
+		if _, err := tx.Exec(ctx,
+			`UPDATE payments SET status = 'SUCCESS', paid_at = now(), updated_at = now() WHERE id = $1`,
+			paymentID); err != nil {
+			return false, err
+		}
+		if _, err := tx.Exec(ctx,
+			`UPDATE orders SET status = 'PAID', updated_at = now() WHERE id = $1 AND status = 'PENDING'`,
+			orderID); err != nil {
+			return false, err
+		}
+	case "FAILED":
+		if _, err := tx.Exec(ctx,
+			`UPDATE payments SET status = 'FAILED', updated_at = now() WHERE id = $1`,
+			paymentID); err != nil {
+			return false, err
+		}
+	default: // EXPIRED, CANCELLED: order expires/cancels, stock returns
+		if _, err := tx.Exec(ctx,
+			`UPDATE payments SET status = $2, updated_at = now() WHERE id = $1`,
+			paymentID, status); err != nil {
+			return false, err
+		}
+		tag, err := tx.Exec(ctx,
+			`UPDATE orders SET status = $2, updated_at = now() WHERE id = $1 AND status = 'PENDING'`,
+			orderID, status)
+		if err != nil {
+			return false, err
+		}
+		if tag.RowsAffected() == 1 {
+			if _, err := tx.Exec(ctx,
+				`UPDATE products p
+				 SET stock = p.stock + oi.quantity, updated_at = now()
+				 FROM order_items oi
+				 WHERE oi.order_id = $1 AND p.id = oi.product_id`, orderID); err != nil {
+				return false, err
+			}
+		}
 	}
+
 	return true, tx.Commit(ctx)
 }
