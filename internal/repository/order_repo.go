@@ -397,6 +397,63 @@ func (r *OrderRepo) GetByID(ctx context.Context, orderID string) (*model.Order, 
 	return o, nil
 }
 
+// ExpirePending transitions every overdue PENDING order (expired_at < now())
+// to EXPIRED, marks its payment EXPIRED and restores stock — all in one
+// transaction (PRD C.9, F.3). Only PENDING rows are picked and locked, so a
+// concurrent webhook/cancel wins and nothing is double-processed; payments
+// already past PENDING (e.g. FAILED) are left alone. Returns the number of
+// expired orders.
+func (r *OrderRepo) ExpirePending(ctx context.Context) (int, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback(ctx)
+
+	rows, err := tx.Query(ctx,
+		`SELECT id FROM orders
+		 WHERE status = 'PENDING' AND expired_at < now()
+		 FOR UPDATE`)
+	if err != nil {
+		return 0, err
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+
+	for _, id := range ids {
+		if _, err := tx.Exec(ctx,
+			`UPDATE orders SET status = 'EXPIRED', updated_at = now()
+			 WHERE id = $1 AND status = 'PENDING'`, id); err != nil {
+			return 0, err
+		}
+		if _, err := tx.Exec(ctx,
+			`UPDATE payments SET status = 'EXPIRED', updated_at = now()
+			 WHERE order_id = $1 AND status = 'PENDING'`, id); err != nil {
+			return 0, err
+		}
+		if _, err := tx.Exec(ctx,
+			`UPDATE products p
+			 SET stock = p.stock + oi.quantity, updated_at = now()
+			 FROM order_items oi
+			 WHERE oi.order_id = $1 AND p.id = oi.product_id`, id); err != nil {
+			return 0, err
+		}
+	}
+
+	return len(ids), tx.Commit(ctx)
+}
+
 // ListItemsByOrderIDs returns order_items for the given order ids, grouped
 // by order_id (single query, no N+1).
 func (r *OrderRepo) ListItemsByOrderIDs(ctx context.Context, orderIDs []string) (map[string][]*model.OrderItem, error) {

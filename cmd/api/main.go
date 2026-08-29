@@ -13,6 +13,7 @@ import (
 	"ecommerce/server/internal/config"
 	"ecommerce/server/internal/database"
 	"ecommerce/server/internal/handler"
+	"ecommerce/server/internal/jobs"
 	jwtpkg "ecommerce/server/internal/jwt"
 	"ecommerce/server/internal/mail"
 	"ecommerce/server/internal/middleware"
@@ -87,6 +88,9 @@ func main() {
 	orderSvc := service.NewOrderService(orderRepo)
 	orderHandler := handler.NewOrder(orderSvc)
 	paymentHandler := handler.NewPayment(paymentClient, service.NewPaymentService(repository.NewPaymentRepo(pool)))
+
+	// Expire overdue PENDING orders every minute (PRD C.9, F.3).
+	go jobs.ExpireOrders(context.Background(), orderRepo, time.Minute, log)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", health.Liveness)
