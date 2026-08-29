@@ -147,6 +147,30 @@ func orderPayload(order *model.Order, items []*model.OrderItem) map[string]any {
 	}
 }
 
+func (o *Order) Cancel(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.ClaimsFrom(r.Context())
+	if !ok {
+		respondError(w, http.StatusUnauthorized, "Unauthorized", "UNAUTHORIZED", nil)
+		return
+	}
+
+	if err := o.svc.Cancel(r.Context(), claims.UserID, r.PathValue("id")); err != nil {
+		switch {
+		case errors.Is(err, service.ErrForbidden):
+			respondError(w, http.StatusForbidden, "Forbidden", "FORBIDDEN", nil)
+		case errors.Is(err, repository.ErrNotFound):
+			respondError(w, http.StatusNotFound, "Order not found", "NOT_FOUND", nil)
+		case errors.Is(err, repository.ErrOrderNotCancellable):
+			respondError(w, http.StatusConflict, "Order cannot be cancelled", "ORDER_CANNOT_BE_CANCELLED", nil)
+		default:
+			respondError(w, http.StatusInternalServerError, "Internal server error", "INTERNAL_ERROR", nil)
+		}
+		return
+	}
+
+	respondJSON(w, http.StatusOK, map[string]any{"success": true, "data": nil})
+}
+
 func (o *Order) respondError(w http.ResponseWriter, err error) {
 	var verr *service.ValidationError
 	if errors.As(err, &verr) {

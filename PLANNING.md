@@ -64,14 +64,14 @@ Pecahan task per fase mengikuti PRD §U (Development Roadmap). Sumber kebenaran:
 - [x] Test: duplikat wishlist 409, item inactive `is_available:false` tidak masuk total
 - [x] `GET /cart` sertakan `primary_image` per item (subquery `product_images`, pola sama wishlist)
 
-**DoD (PRD §U.4):** wishlist & cart end-to-end, termasuk handling produk inactive/dihapus.
+**DoD (PRD §U.4):** wishlist & cart end-to-end, termasuk handling produk i/nactive/dihapus.
 
 ## Fase 5 — Address + order (tanpa payment)
 
 - [x] CRUD `/addresses` + `PATCH /addresses/:id/default` (satu default, transaction)
 - [x] `POST /orders/checkout`: DB transaction, `SELECT ... FOR UPDATE` (urutan kunci konsisten), validasi ulang harga/stock/is_active, snapshot address & order_items, kurangi stock, hapus cart items, payment stub
 - [x] `GET /orders` (pagination, milik sendiri), `GET /orders/:id` (ownership check → 403)
-- [ ] `POST /orders/:id/cancel` (hanya PENDING, stock kembali dalam transaction)
+- [x] `POST /orders/:id/cancel` (hanya PENDING, stock kembali dalam transaction)
 - [ ] `GET /admin/orders`, `PATCH /admin/orders/:id/status` (state transition PRD §C.9, final state terkunci)
 - [ ] Test: **concurrency checkout stock=1** (2 goroutine, hanya 1 sukses)
 

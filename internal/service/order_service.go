@@ -66,3 +66,17 @@ func (s *OrderService) Get(ctx context.Context, userID, orderID string) (*model.
 	}
 	return order, items[order.ID], nil
 }
+
+// Cancel cancels the user's PENDING order. Returns ErrForbidden for another
+// user's order (PRD S.6) and ErrOrderNotCancellable when the status is no
+// longer PENDING (PRD C.9, S.12).
+func (s *OrderService) Cancel(ctx context.Context, userID, orderID string) error {
+	order, err := s.orders.GetByID(ctx, orderID)
+	if err != nil {
+		return err
+	}
+	if order.UserID != userID {
+		return ErrForbidden
+	}
+	return s.orders.Cancel(ctx, orderID)
+}

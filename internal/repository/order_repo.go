@@ -11,11 +11,12 @@ import (
 )
 
 var (
-	ErrCartEmpty         = errors.New("cart is empty")
-	ErrInvalidAddress    = errors.New("address not found or not owned by user")
-	ErrProductNotFound   = errors.New("product not found")
-	ErrProductInactive   = errors.New("product inactive or deleted")
-	ErrInsufficientStock = errors.New("insufficient stock")
+	ErrCartEmpty           = errors.New("cart is empty")
+	ErrInvalidAddress      = errors.New("address not found or not owned by user")
+	ErrProductNotFound     = errors.New("product not found")
+	ErrProductInactive     = errors.New("product inactive or deleted")
+	ErrInsufficientStock   = errors.New("insufficient stock")
+	ErrOrderNotCancellable = errors.New("order cannot be cancelled")
 )
 
 type OrderRepo struct {
@@ -202,6 +203,39 @@ func scanOrder(row pgx.Row) (*model.Order, error) {
 		return nil, err
 	}
 	return o, nil
+}
+
+// Cancel transitions a PENDING order to CANCELLED and restores stock for
+// every order_item in the same transaction (PRD C.9, S.14). The status
+// check is atomic (UPDATE ... WHERE status = 'PENDING'), so a concurrent
+// transition (e.g. payment webhook) wins and this returns
+// ErrOrderNotCancellable.
+func (r *OrderRepo) Cancel(ctx context.Context, orderID string) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	tag, err := tx.Exec(ctx,
+		`UPDATE orders SET status = 'CANCELLED', updated_at = now()
+		 WHERE id = $1 AND status = 'PENDING'`, orderID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrOrderNotCancellable
+	}
+
+	if _, err := tx.Exec(ctx,
+		`UPDATE products p
+		 SET stock = p.stock + oi.quantity, updated_at = now()
+		 FROM order_items oi
+		 WHERE oi.order_id = $1 AND p.id = oi.product_id`, orderID); err != nil {
+		return err
+	}
+
+	return tx.Commit(ctx)
 }
 
 // List returns the user's orders newest first, with the total count for

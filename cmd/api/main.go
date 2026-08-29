@@ -112,6 +112,7 @@ func main() {
 	mux.Handle("POST /orders/checkout", userRequired(http.HandlerFunc(orderHandler.Checkout)))
 	mux.Handle("GET /orders", userRequired(http.HandlerFunc(orderHandler.List)))
 	mux.Handle("GET /orders/{id}", userRequired(http.HandlerFunc(orderHandler.Get)))
+	mux.Handle("POST /orders/{id}/cancel", userRequired(http.HandlerFunc(orderHandler.Cancel)))
 	adminRequired := func(next http.Handler) http.Handler {
 		return middleware.RequireAuth(jwtHelper)(middleware.RequireRole("admin")(next))
 	}

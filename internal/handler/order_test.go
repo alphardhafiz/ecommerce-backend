@@ -227,6 +227,138 @@ func TestOrderCheckoutInactiveProduct(t *testing.T) {
 	}
 }
 
+func TestOrderCancelSuccessRestoresStock(t *testing.T) {
+	h, pool := newOrderHandler(t)
+	email := "orders-cancel@example.com"
+	userID, itemID, addrID, prodID := seedCheckoutUser(t, pool, email, 50000, 5, 2)
+	defer cleanupOrderUser(t, pool, email)
+	defer pool.Exec(context.Background(), `DELETE FROM products WHERE id = $1`, prodID)
+	token := userToken(t, userID, "user")
+
+	rec := checkoutRequest(t, h, token, `{"cart_item_ids":["`+itemID+`"],"address_id":"`+addrID+`"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("checkout status = %d", rec.Code)
+	}
+	var body struct {
+		Data struct {
+			OrderID string `json:"order_id"`
+		} `json:"data"`
+	}
+	json.Unmarshal(rec.Body.Bytes(), &body)
+
+	var stockAfterCheckout int
+	pool.QueryRow(context.Background(), `SELECT stock FROM products WHERE id = $1`, prodID).Scan(&stockAfterCheckout)
+	if stockAfterCheckout != 3 {
+		t.Fatalf("stock after checkout = %d, want 3", stockAfterCheckout)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/orders/"+body.Data.OrderID+"/cancel", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.SetPathValue("id", body.Data.OrderID)
+	rec2 := httptest.NewRecorder()
+	middleware.RequireAuth(jwtpkg.New("test-secret", jwtpkg.DefaultTTL))(http.HandlerFunc(h.Cancel)).ServeHTTP(rec2, req)
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("cancel status = %d, body: %s", rec2.Code, rec2.Body.String())
+	}
+
+	var status string
+	pool.QueryRow(context.Background(), `SELECT status FROM orders WHERE id = $1`, body.Data.OrderID).Scan(&status)
+	if status != "CANCELLED" {
+		t.Errorf("status = %s, want CANCELLED", status)
+	}
+	var stock int
+	pool.QueryRow(context.Background(), `SELECT stock FROM products WHERE id = $1`, prodID).Scan(&stock)
+	if stock != 5 {
+		t.Errorf("stock = %d, want restored 5", stock)
+	}
+}
+
+func TestOrderCancelNotPending(t *testing.T) {
+	h, pool := newOrderHandler(t)
+	email := "orders-cancel-notpending@example.com"
+	userID, itemID, addrID, prodID := seedCheckoutUser(t, pool, email, 50000, 5, 1)
+	defer cleanupOrderUser(t, pool, email)
+	defer pool.Exec(context.Background(), `DELETE FROM products WHERE id = $1`, prodID)
+	token := userToken(t, userID, "user")
+
+	rec := checkoutRequest(t, h, token, `{"cart_item_ids":["`+itemID+`"],"address_id":"`+addrID+`"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("checkout status = %d", rec.Code)
+	}
+	var body struct {
+		Data struct {
+			OrderID string `json:"order_id"`
+		} `json:"data"`
+	}
+	json.Unmarshal(rec.Body.Bytes(), &body)
+
+	// force status to PAID (simulate payment, Fase 6)
+	pool.Exec(context.Background(), `UPDATE orders SET status = 'PAID' WHERE id = $1`, body.Data.OrderID)
+
+	req := httptest.NewRequest(http.MethodPost, "/orders/"+body.Data.OrderID+"/cancel", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.SetPathValue("id", body.Data.OrderID)
+	rec2 := httptest.NewRecorder()
+	middleware.RequireAuth(jwtpkg.New("test-secret", jwtpkg.DefaultTTL))(http.HandlerFunc(h.Cancel)).ServeHTTP(rec2, req)
+	if rec2.Code != http.StatusConflict {
+		t.Fatalf("cancel status = %d, want 409", rec2.Code)
+	}
+	if !strings.Contains(rec2.Body.String(), "ORDER_CANNOT_BE_CANCELLED") {
+		t.Errorf("body = %s, want ORDER_CANNOT_BE_CANCELLED", rec2.Body.String())
+	}
+
+	// stock must NOT be restored
+	var stock int
+	pool.QueryRow(context.Background(), `SELECT stock FROM products WHERE id = $1`, prodID).Scan(&stock)
+	if stock != 4 {
+		t.Errorf("stock = %d, want unchanged 4", stock)
+	}
+}
+
+func TestOrderCancelOwnershipForbidden(t *testing.T) {
+	h, pool := newOrderHandler(t)
+	ownerEmail := "orders-cancel-owner@example.com"
+	otherEmail := "orders-cancel-other@example.com"
+	ownerID, itemID, addrID, _ := seedCheckoutUser(t, pool, ownerEmail, 50000, 5, 1)
+	seedUser(t, pool, otherEmail, "abc12345", "active")
+	defer cleanupOrderUser(t, pool, ownerEmail)
+	defer cleanupOrderUser(t, pool, otherEmail)
+
+	rec := checkoutRequest(t, h, userToken(t, ownerID, "user"),
+		`{"cart_item_ids":["`+itemID+`"],"address_id":"`+addrID+`"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("checkout status = %d", rec.Code)
+	}
+	var body struct {
+		Data struct {
+			OrderID string `json:"order_id"`
+		} `json:"data"`
+	}
+	json.Unmarshal(rec.Body.Bytes(), &body)
+
+	var otherID string
+	pool.QueryRow(context.Background(), `SELECT id FROM users WHERE email = $1`, otherEmail).Scan(&otherID)
+
+	req := httptest.NewRequest(http.MethodPost, "/orders/"+body.Data.OrderID+"/cancel", nil)
+	req.Header.Set("Authorization", "Bearer "+userToken(t, otherID, "user"))
+	req.SetPathValue("id", body.Data.OrderID)
+	rec2 := httptest.NewRecorder()
+	middleware.RequireAuth(jwtpkg.New("test-secret", jwtpkg.DefaultTTL))(http.HandlerFunc(h.Cancel)).ServeHTTP(rec2, req)
+	if rec2.Code != http.StatusForbidden {
+		t.Fatalf("cancel status = %d, want 403", rec2.Code)
+	}
+
+	// nonexistent order -> 404
+	req = httptest.NewRequest(http.MethodPost, "/orders/00000000-0000-0000-0000-000000000000/cancel", nil)
+	req.Header.Set("Authorization", "Bearer "+userToken(t, otherID, "user"))
+	req.SetPathValue("id", "00000000-0000-0000-0000-000000000000")
+	rec3 := httptest.NewRecorder()
+	middleware.RequireAuth(jwtpkg.New("test-secret", jwtpkg.DefaultTTL))(http.HandlerFunc(h.Cancel)).ServeHTTP(rec3, req)
+	if rec3.Code != http.StatusNotFound {
+		t.Fatalf("cancel status = %d, want 404", rec3.Code)
+	}
+}
+
 func TestOrderGetUnauthorized(t *testing.T) {
 	h, _ := newOrderHandler(t)
 	rec := ordersRequest(t, h, http.MethodGet, "/orders", "", "")
