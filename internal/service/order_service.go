@@ -7,6 +7,15 @@ import (
 	"ecommerce/server/internal/repository"
 )
 
+// orderTransitions encodes the admin state machine (PRD C.9). PENDING is
+// handled by webhook/job/user-cancel, never by the admin PATCH. Final
+// states (COMPLETED/CANCELLED/EXPIRED) have no outgoing edges.
+var orderTransitions = map[string]map[string]bool{
+	"PAID":       {"PROCESSING": true, "CANCELLED": true},
+	"PROCESSING": {"SHIPPED": true},
+	"SHIPPED":    {"COMPLETED": true},
+}
+
 type OrderService struct {
 	orders *repository.OrderRepo
 }
@@ -79,4 +88,40 @@ func (s *OrderService) Cancel(ctx context.Context, userID, orderID string) error
 		return ErrForbidden
 	}
 	return s.orders.Cancel(ctx, orderID)
+}
+
+// ListAll returns every user's orders (admin view) with items grouped per
+// order and the total count for pagination meta.
+func (s *OrderService) ListAll(ctx context.Context, status string, limit, offset int) ([]*model.Order, map[string][]*model.OrderItem, int64, error) {
+	orders, total, err := s.orders.ListAll(ctx, status, limit, offset)
+	if err != nil {
+		return nil, nil, 0, err
+	}
+	if len(orders) == 0 {
+		return orders, map[string][]*model.OrderItem{}, 0, nil
+	}
+
+	ids := make([]string, len(orders))
+	for i, o := range orders {
+		ids[i] = o.ID
+	}
+	items, err := s.orders.ListItemsByOrderIDs(ctx, ids)
+	if err != nil {
+		return nil, nil, 0, err
+	}
+	return orders, items, total, nil
+}
+
+// UpdateStatus applies an admin status transition (PRD C.9). Returns
+// ErrInvalidStatusTransition when the transition is not allowed or the
+// status changed concurrently.
+func (s *OrderService) UpdateStatus(ctx context.Context, orderID, toStatus string) error {
+	order, err := s.orders.GetByID(ctx, orderID)
+	if err != nil {
+		return err
+	}
+	if !orderTransitions[order.Status][toStatus] {
+		return repository.ErrInvalidStatusTransition
+	}
+	return s.orders.UpdateStatus(ctx, orderID, order.Status, toStatus)
 }

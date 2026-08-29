@@ -116,6 +116,8 @@ func main() {
 	adminRequired := func(next http.Handler) http.Handler {
 		return middleware.RequireAuth(jwtHelper)(middleware.RequireRole("admin")(next))
 	}
+	mux.Handle("GET /admin/orders", adminRequired(http.HandlerFunc(orderHandler.ListAll)))
+	mux.Handle("PATCH /admin/orders/{id}/status", adminRequired(http.HandlerFunc(orderHandler.UpdateStatus)))
 	mux.Handle("GET /admin/users", adminRequired(http.HandlerFunc(userHandler.ListUsers)))
 	mux.Handle("PATCH /admin/users/{id}/status", adminRequired(http.HandlerFunc(userHandler.UpdateUserStatus)))
 	mux.HandleFunc("GET /categories", categoryHandler.ListActive)

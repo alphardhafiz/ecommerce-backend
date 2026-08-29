@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -11,12 +12,13 @@ import (
 )
 
 var (
-	ErrCartEmpty           = errors.New("cart is empty")
-	ErrInvalidAddress      = errors.New("address not found or not owned by user")
-	ErrProductNotFound     = errors.New("product not found")
-	ErrProductInactive     = errors.New("product inactive or deleted")
-	ErrInsufficientStock   = errors.New("insufficient stock")
-	ErrOrderNotCancellable = errors.New("order cannot be cancelled")
+	ErrCartEmpty               = errors.New("cart is empty")
+	ErrInvalidAddress          = errors.New("address not found or not owned by user")
+	ErrProductNotFound         = errors.New("product not found")
+	ErrProductInactive         = errors.New("product inactive or deleted")
+	ErrInsufficientStock       = errors.New("insufficient stock")
+	ErrOrderNotCancellable     = errors.New("order cannot be cancelled")
+	ErrInvalidStatusTransition = errors.New("invalid order status transition")
 )
 
 type OrderRepo struct {
@@ -233,6 +235,77 @@ func (r *OrderRepo) Cancel(ctx context.Context, orderID string) error {
 		 FROM order_items oi
 		 WHERE oi.order_id = $1 AND p.id = oi.product_id`, orderID); err != nil {
 		return err
+	}
+
+	return tx.Commit(ctx)
+}
+
+// ListAll returns every user's orders (admin view) filtered by status
+// (empty = all), newest first, with the total count for pagination meta.
+func (r *OrderRepo) ListAll(ctx context.Context, status string, limit, offset int) ([]*model.Order, int64, error) {
+	where := ""
+	args := []any{}
+	if status != "" {
+		args = append(args, status)
+		where = "WHERE status = $1"
+	}
+
+	var total int64
+	if err := r.pool.QueryRow(ctx, `SELECT count(*) FROM orders `+where, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	args = append(args, limit, offset)
+	rows, err := r.pool.Query(ctx,
+		fmt.Sprintf(`SELECT `+orderCols+` FROM orders %s
+		 ORDER BY created_at DESC
+		 LIMIT $%d OFFSET $%d`, where, len(args)-1, len(args)), args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	var orders []*model.Order
+	for rows.Next() {
+		o, err := scanOrder(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		orders = append(orders, o)
+	}
+	return orders, total, rows.Err()
+}
+
+// UpdateStatus transitions an order from fromStatus to toStatus, restoring
+// stock when the new status is CANCELLED (PRD S.14) — all in one
+// transaction. The fromStatus guard makes concurrent transitions (payment
+// webhook, scheduled job) win; a guard miss returns
+// ErrInvalidStatusTransition.
+func (r *OrderRepo) UpdateStatus(ctx context.Context, orderID, fromStatus, toStatus string) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	tag, err := tx.Exec(ctx,
+		`UPDATE orders SET status = $3, updated_at = now()
+		 WHERE id = $1 AND status = $2`, orderID, fromStatus, toStatus)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrInvalidStatusTransition
+	}
+
+	if toStatus == "CANCELLED" {
+		if _, err := tx.Exec(ctx,
+			`UPDATE products p
+			 SET stock = p.stock + oi.quantity, updated_at = now()
+			 FROM order_items oi
+			 WHERE oi.order_id = $1 AND p.id = oi.product_id`, orderID); err != nil {
+			return err
+		}
 	}
 
 	return tx.Commit(ctx)

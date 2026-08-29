@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 
 	"ecommerce/server/internal/middleware"
 	"ecommerce/server/internal/model"
@@ -162,6 +163,85 @@ func (o *Order) Cancel(w http.ResponseWriter, r *http.Request) {
 			respondError(w, http.StatusNotFound, "Order not found", "NOT_FOUND", nil)
 		case errors.Is(err, repository.ErrOrderNotCancellable):
 			respondError(w, http.StatusConflict, "Order cannot be cancelled", "ORDER_CANNOT_BE_CANCELLED", nil)
+		default:
+			respondError(w, http.StatusInternalServerError, "Internal server error", "INTERNAL_ERROR", nil)
+		}
+		return
+	}
+
+	respondJSON(w, http.StatusOK, map[string]any{"success": true, "data": nil})
+}
+
+var orderStatuses = map[string]bool{
+	"PENDING": true, "PAID": true, "PROCESSING": true, "SHIPPED": true,
+	"COMPLETED": true, "CANCELLED": true, "EXPIRED": true,
+}
+
+func (o *Order) ListAll(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	page := parsePositiveInt(q.Get("page"), 1)
+	limit := parsePositiveInt(q.Get("limit"), 12)
+	if limit > 50 {
+		limit = 50
+	}
+
+	status := strings.ToUpper(strings.TrimSpace(q.Get("status")))
+	if status != "" && !orderStatuses[status] {
+		respondError(w, http.StatusBadRequest, "Invalid query parameter", "INVALID_QUERY_PARAM", nil)
+		return
+	}
+
+	orders, itemsByOrder, total, err := o.svc.ListAll(r.Context(), status, limit, (page-1)*limit)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "Internal server error", "INTERNAL_ERROR", nil)
+		return
+	}
+
+	data := make([]map[string]any, 0, len(orders))
+	for _, order := range orders {
+		data = append(data, orderPayload(order, itemsByOrder[order.ID]))
+	}
+
+	totalPages := 0
+	if total > 0 {
+		totalPages = int((total + int64(limit) - 1) / int64(limit))
+	}
+
+	respondJSON(w, http.StatusOK, map[string]any{
+		"success": true,
+		"data":    data,
+		"meta": map[string]any{
+			"page":        page,
+			"limit":       limit,
+			"total":       total,
+			"total_pages": totalPages,
+		},
+	})
+}
+
+type orderUpdateStatusRequest struct {
+	Status string `json:"status"`
+}
+
+func (o *Order) UpdateStatus(w http.ResponseWriter, r *http.Request) {
+	var req orderUpdateStatusRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid request body", "INVALID_REQUEST", nil)
+		return
+	}
+	req.Status = strings.ToUpper(strings.TrimSpace(req.Status))
+	if !orderStatuses[req.Status] {
+		respondError(w, http.StatusBadRequest, "Validation failed", "VALIDATION_ERROR",
+			[]map[string]string{{"field": "status", "message": "status must be one of PENDING/PAID/PROCESSING/SHIPPED/COMPLETED/CANCELLED/EXPIRED"}})
+		return
+	}
+
+	if err := o.svc.UpdateStatus(r.Context(), r.PathValue("id"), req.Status); err != nil {
+		switch {
+		case errors.Is(err, repository.ErrNotFound):
+			respondError(w, http.StatusNotFound, "Order not found", "NOT_FOUND", nil)
+		case errors.Is(err, repository.ErrInvalidStatusTransition):
+			respondError(w, http.StatusConflict, "Invalid status transition", "INVALID_STATUS_TRANSITION", nil)
 		default:
 			respondError(w, http.StatusInternalServerError, "Internal server error", "INTERNAL_ERROR", nil)
 		}
