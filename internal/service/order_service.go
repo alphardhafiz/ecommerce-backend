@@ -27,3 +27,42 @@ func (s *OrderService) Checkout(ctx context.Context, userID string, cartItemIDs 
 	}
 	return s.orders.Checkout(ctx, userID, cartItemIDs, addressID)
 }
+
+// List returns the user's orders (newest first) with items grouped per
+// order, plus the total count for pagination meta.
+func (s *OrderService) List(ctx context.Context, userID string, limit, offset int) ([]*model.Order, map[string][]*model.OrderItem, int64, error) {
+	orders, total, err := s.orders.List(ctx, userID, limit, offset)
+	if err != nil {
+		return nil, nil, 0, err
+	}
+	if len(orders) == 0 {
+		return orders, map[string][]*model.OrderItem{}, 0, nil
+	}
+
+	ids := make([]string, len(orders))
+	for i, o := range orders {
+		ids[i] = o.ID
+	}
+	items, err := s.orders.ListItemsByOrderIDs(ctx, ids)
+	if err != nil {
+		return nil, nil, 0, err
+	}
+	return orders, items, total, nil
+}
+
+// Get returns an order with its items. Returns ErrForbidden when the order
+// belongs to another user (PRD S.6).
+func (s *OrderService) Get(ctx context.Context, userID, orderID string) (*model.Order, []*model.OrderItem, error) {
+	order, err := s.orders.GetByID(ctx, orderID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if order.UserID != userID {
+		return nil, nil, ErrForbidden
+	}
+	items, err := s.orders.ListItemsByOrderIDs(ctx, []string{order.ID})
+	if err != nil {
+		return nil, nil, err
+	}
+	return order, items[order.ID], nil
+}

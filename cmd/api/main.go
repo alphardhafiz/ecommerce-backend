@@ -110,6 +110,8 @@ func main() {
 	mux.Handle("DELETE /addresses/{id}", userRequired(http.HandlerFunc(addressHandler.Delete)))
 	mux.Handle("PATCH /addresses/{id}/default", userRequired(http.HandlerFunc(addressHandler.SetDefault)))
 	mux.Handle("POST /orders/checkout", userRequired(http.HandlerFunc(orderHandler.Checkout)))
+	mux.Handle("GET /orders", userRequired(http.HandlerFunc(orderHandler.List)))
+	mux.Handle("GET /orders/{id}", userRequired(http.HandlerFunc(orderHandler.Get)))
 	adminRequired := func(next http.Handler) http.Handler {
 		return middleware.RequireAuth(jwtHelper)(middleware.RequireRole("admin")(next))
 	}

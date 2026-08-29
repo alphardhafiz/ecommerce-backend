@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"ecommerce/server/internal/middleware"
+	"ecommerce/server/internal/model"
 	"ecommerce/server/internal/repository"
 	"ecommerce/server/internal/service"
 )
@@ -51,6 +52,99 @@ func (o *Order) Checkout(w http.ResponseWriter, r *http.Request) {
 			"payment":      nil, // payment stub: Midtrans integration lands in Fase 6
 		},
 	})
+}
+
+func (o *Order) List(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.ClaimsFrom(r.Context())
+	if !ok {
+		respondError(w, http.StatusUnauthorized, "Unauthorized", "UNAUTHORIZED", nil)
+		return
+	}
+
+	q := r.URL.Query()
+	page := parsePositiveInt(q.Get("page"), 1)
+	limit := parsePositiveInt(q.Get("limit"), 12)
+	if limit > 50 {
+		limit = 50
+	}
+
+	orders, itemsByOrder, total, err := o.svc.List(r.Context(), claims.UserID, limit, (page-1)*limit)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "Internal server error", "INTERNAL_ERROR", nil)
+		return
+	}
+
+	data := make([]map[string]any, 0, len(orders))
+	for _, order := range orders {
+		data = append(data, orderPayload(order, itemsByOrder[order.ID]))
+	}
+
+	totalPages := 0
+	if total > 0 {
+		totalPages = int((total + int64(limit) - 1) / int64(limit))
+	}
+
+	respondJSON(w, http.StatusOK, map[string]any{
+		"success": true,
+		"data":    data,
+		"meta": map[string]any{
+			"page":        page,
+			"limit":       limit,
+			"total":       total,
+			"total_pages": totalPages,
+		},
+	})
+}
+
+func (o *Order) Get(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.ClaimsFrom(r.Context())
+	if !ok {
+		respondError(w, http.StatusUnauthorized, "Unauthorized", "UNAUTHORIZED", nil)
+		return
+	}
+
+	order, items, err := o.svc.Get(r.Context(), claims.UserID, r.PathValue("id"))
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrForbidden):
+			respondError(w, http.StatusForbidden, "Forbidden", "FORBIDDEN", nil)
+		case errors.Is(err, repository.ErrNotFound):
+			respondError(w, http.StatusNotFound, "Order not found", "NOT_FOUND", nil)
+		default:
+			respondError(w, http.StatusInternalServerError, "Internal server error", "INTERNAL_ERROR", nil)
+		}
+		return
+	}
+
+	respondJSON(w, http.StatusOK, map[string]any{
+		"success": true,
+		"data":    orderPayload(order, items),
+	})
+}
+
+func orderPayload(order *model.Order, items []*model.OrderItem) map[string]any {
+	itemData := make([]map[string]any, 0, len(items))
+	for _, it := range items {
+		itemData = append(itemData, map[string]any{
+			"id":           it.ID,
+			"product_id":   it.ProductID,
+			"product_name": it.ProductName,
+			"price":        it.Price,
+			"quantity":     it.Quantity,
+			"subtotal":     it.Subtotal,
+		})
+	}
+	return map[string]any{
+		"id":               order.ID,
+		"status":           order.Status,
+		"total_amount":     order.TotalAmount,
+		"recipient_name":   order.RecipientName,
+		"phone":            order.Phone,
+		"shipping_address": order.ShippingAddress,
+		"expired_at":       order.ExpiredAt,
+		"created_at":       order.CreatedAt,
+		"items":            itemData,
+	}
 }
 
 func (o *Order) respondError(w http.ResponseWriter, err error) {

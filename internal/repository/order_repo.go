@@ -193,3 +193,82 @@ func (r *OrderRepo) Checkout(ctx context.Context, userID string, cartItemIDs []s
 
 	return order, tx.Commit(ctx)
 }
+
+const orderCols = `id, user_id, status, total_amount::bigint, recipient_name, phone, shipping_address, expired_at, created_at, updated_at`
+
+func scanOrder(row pgx.Row) (*model.Order, error) {
+	o := &model.Order{}
+	if err := row.Scan(&o.ID, &o.UserID, &o.Status, &o.TotalAmount, &o.RecipientName, &o.Phone, &o.ShippingAddress, &o.ExpiredAt, &o.CreatedAt, &o.UpdatedAt); err != nil {
+		return nil, err
+	}
+	return o, nil
+}
+
+// List returns the user's orders newest first, with the total count for
+// pagination meta.
+func (r *OrderRepo) List(ctx context.Context, userID string, limit, offset int) ([]*model.Order, int64, error) {
+	var total int64
+	if err := r.pool.QueryRow(ctx,
+		`SELECT count(*) FROM orders WHERE user_id = $1`, userID).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	rows, err := r.pool.Query(ctx,
+		`SELECT `+orderCols+` FROM orders
+		 WHERE user_id = $1
+		 ORDER BY created_at DESC
+		 LIMIT $2 OFFSET $3`, userID, limit, offset)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	var orders []*model.Order
+	for rows.Next() {
+		o, err := scanOrder(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		orders = append(orders, o)
+	}
+	return orders, total, rows.Err()
+}
+
+// GetByID returns an order by id regardless of owner (user_id is checked by
+// the service for ownership, PRD S.6). Returns ErrNotFound when it does not
+// exist.
+func (r *OrderRepo) GetByID(ctx context.Context, orderID string) (*model.Order, error) {
+	o, err := scanOrder(r.pool.QueryRow(ctx,
+		`SELECT `+orderCols+` FROM orders WHERE id = $1`, orderID))
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return o, nil
+}
+
+// ListItemsByOrderIDs returns order_items for the given order ids, grouped
+// by order_id (single query, no N+1).
+func (r *OrderRepo) ListItemsByOrderIDs(ctx context.Context, orderIDs []string) (map[string][]*model.OrderItem, error) {
+	rows, err := r.pool.Query(ctx,
+		`SELECT id, order_id, product_id, product_name, price::bigint, quantity, subtotal::bigint
+		 FROM order_items
+		 WHERE order_id = ANY($1)
+		 ORDER BY created_at`, orderIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make(map[string][]*model.OrderItem)
+	for rows.Next() {
+		it := &model.OrderItem{}
+		if err := rows.Scan(&it.ID, &it.OrderID, &it.ProductID, &it.ProductName, &it.Price, &it.Quantity, &it.Subtotal); err != nil {
+			return nil, err
+		}
+		out[it.OrderID] = append(out[it.OrderID], it)
+	}
+	return out, rows.Err()
+}

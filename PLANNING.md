@@ -70,7 +70,7 @@ Pecahan task per fase mengikuti PRD §U (Development Roadmap). Sumber kebenaran:
 
 - [x] CRUD `/addresses` + `PATCH /addresses/:id/default` (satu default, transaction)
 - [x] `POST /orders/checkout`: DB transaction, `SELECT ... FOR UPDATE` (urutan kunci konsisten), validasi ulang harga/stock/is_active, snapshot address & order_items, kurangi stock, hapus cart items, payment stub
-- [ ] `GET /orders` (pagination, milik sendiri), `GET /orders/:id` (ownership check → 403)
+- [x] `GET /orders` (pagination, milik sendiri), `GET /orders/:id` (ownership check → 403)
 - [ ] `POST /orders/:id/cancel` (hanya PENDING, stock kembali dalam transaction)
 - [ ] `GET /admin/orders`, `PATCH /admin/orders/:id/status` (state transition PRD §C.9, final state terkunci)
 - [ ] Test: **concurrency checkout stock=1** (2 goroutine, hanya 1 sukses)

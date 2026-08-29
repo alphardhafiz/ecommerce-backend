@@ -32,6 +32,15 @@ func newOrderHandler(t *testing.T) (*Order, *pgxpool.Pool) {
 	return NewOrder(service.NewOrderService(repository.NewOrderRepo(pool))), pool
 }
 
+// cleanupOrderUser removes orders (FK orders.user_id has no cascade) before
+// the user row.
+func cleanupOrderUser(t *testing.T, pool *pgxpool.Pool, email string) {
+	t.Helper()
+	ctx := context.Background()
+	pool.Exec(ctx, `DELETE FROM orders WHERE user_id IN (SELECT id FROM users WHERE email = $1)`, email)
+	pool.Exec(ctx, `DELETE FROM users WHERE email = $1`, email)
+}
+
 func checkoutRequest(t *testing.T, h *Order, token, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, "/orders/checkout", bytes.NewBufferString(body))
@@ -87,7 +96,7 @@ func TestOrderCheckoutSuccess(t *testing.T) {
 	h, pool := newOrderHandler(t)
 	email := "checkout-ok@example.com"
 	userID, itemID, addrID, prodID := seedCheckoutUser(t, pool, email, 50000, 10, 2)
-	defer pool.Exec(context.Background(), `DELETE FROM users WHERE email = $1`, email)
+	defer cleanupOrderUser(t, pool, email)
 
 	rec := checkoutRequest(t, h, userToken(t, userID, "user"),
 		`{"cart_item_ids":["`+itemID+`"],"address_id":"`+addrID+`"}`)
@@ -147,7 +156,7 @@ func TestOrderCheckoutValidation(t *testing.T) {
 	h, pool := newOrderHandler(t)
 	email := "checkout-valid@example.com"
 	userID, itemID, addrID, _ := seedCheckoutUser(t, pool, email, 50000, 10, 1)
-	defer pool.Exec(context.Background(), `DELETE FROM users WHERE email = $1`, email)
+	defer cleanupOrderUser(t, pool, email)
 	token := userToken(t, userID, "user")
 
 	cases := []struct {
@@ -179,7 +188,7 @@ func TestOrderCheckoutOutOfStock(t *testing.T) {
 	h, pool := newOrderHandler(t)
 	email := "checkout-oos@example.com"
 	userID, itemID, addrID, prodID := seedCheckoutUser(t, pool, email, 50000, 1, 2)
-	defer pool.Exec(context.Background(), `DELETE FROM users WHERE email = $1`, email)
+	defer cleanupOrderUser(t, pool, email)
 
 	rec := checkoutRequest(t, h, userToken(t, userID, "user"),
 		`{"cart_item_ids":["`+itemID+`"],"address_id":"`+addrID+`"}`)
@@ -201,7 +210,7 @@ func TestOrderCheckoutInactiveProduct(t *testing.T) {
 	h, pool := newOrderHandler(t)
 	email := "checkout-inactive@example.com"
 	userID, itemID, addrID, prodID := seedCheckoutUser(t, pool, email, 50000, 10, 1)
-	defer pool.Exec(context.Background(), `DELETE FROM users WHERE email = $1`, email)
+	defer cleanupOrderUser(t, pool, email)
 
 	prodRepo := repository.NewProductRepo(pool)
 	if _, err := prodRepo.SetActive(context.Background(), prodID, false); err != nil {
@@ -218,10 +227,175 @@ func TestOrderCheckoutInactiveProduct(t *testing.T) {
 	}
 }
 
-func TestOrderCheckoutUnauthorized(t *testing.T) {
+func TestOrderGetUnauthorized(t *testing.T) {
 	h, _ := newOrderHandler(t)
-	rec := checkoutRequest(t, h, "", `{"cart_item_ids":[],"address_id":""}`)
+	rec := ordersRequest(t, h, http.MethodGet, "/orders", "", "")
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401", rec.Code)
+	}
+	rec = ordersRequest(t, h, http.MethodGet, "/orders/x", "x", "")
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("detail status = %d, want 401", rec.Code)
+	}
+}
+
+func ordersRequest(t *testing.T, h *Order, method, path, id, token string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(method, path, nil)
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	if id != "" {
+		req.SetPathValue("id", id)
+	}
+	rec := httptest.NewRecorder()
+	auth := middleware.RequireAuth(jwtpkg.New("test-secret", jwtpkg.DefaultTTL))
+	if id != "" {
+		auth(http.HandlerFunc(h.Get)).ServeHTTP(rec, req)
+	} else {
+		auth(http.HandlerFunc(h.List)).ServeHTTP(rec, req)
+	}
+	return rec
+}
+
+func TestOrderListAndDetail(t *testing.T) {
+	h, pool := newOrderHandler(t)
+	email := "orders-list@example.com"
+	userID, itemID, addrID, _ := seedCheckoutUser(t, pool, email, 50000, 10, 2)
+	defer cleanupOrderUser(t, pool, email)
+	token := userToken(t, userID, "user")
+
+	// checkout twice to have 2 orders
+	rec := checkoutRequest(t, h, token, `{"cart_item_ids":["`+itemID+`"],"address_id":"`+addrID+`"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("checkout 1 status = %d", rec.Code)
+	}
+	var first struct {
+		Data struct {
+			OrderID string `json:"order_id"`
+		} `json:"data"`
+	}
+	json.Unmarshal(rec.Body.Bytes(), &first)
+
+	// refill cart and checkout again
+	catRepo := repository.NewCartRepo(pool)
+	cart, err := catRepo.GetOrCreate(context.Background(), userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prod := seedProduct(t, pool, "Produk Kedua", 30000, 5, nil)
+	defer pool.Exec(context.Background(), `DELETE FROM products WHERE id = $1`, prod.ID)
+	prodRepo := repository.NewProductRepo(pool)
+	if _, err := prodRepo.SetActive(context.Background(), prod.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	catRepo.AddItem(context.Background(), cart.ID, prod.ID, 1)
+	var itemID2 string
+	pool.QueryRow(context.Background(),
+		`SELECT id FROM cart_items WHERE cart_id = $1 AND product_id = $2`, cart.ID, prod.ID).Scan(&itemID2)
+
+	rec = checkoutRequest(t, h, token, `{"cart_item_ids":["`+itemID2+`"],"address_id":"`+addrID+`"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("checkout 2 status = %d, body: %s", rec.Code, rec.Body.String())
+	}
+	var second struct {
+		Data struct {
+			OrderID string `json:"order_id"`
+		} `json:"data"`
+	}
+	json.Unmarshal(rec.Body.Bytes(), &second)
+
+	// list: newest first, 2 orders, items included
+	rec = ordersRequest(t, h, http.MethodGet, "/orders", "", token)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list status = %d", rec.Code)
+	}
+	var listBody struct {
+		Data []struct {
+			ID     string `json:"id"`
+			Status string `json:"status"`
+			Total  int64  `json:"total_amount"`
+			Items  []struct {
+				ProductName string `json:"product_name"`
+			} `json:"items"`
+		} `json:"data"`
+		Meta struct {
+			Total int `json:"total"`
+		} `json:"meta"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &listBody); err != nil {
+		t.Fatal(err)
+	}
+	if listBody.Meta.Total != 2 || len(listBody.Data) != 2 {
+		t.Fatalf("meta.total = %d, len = %d, want 2/2", listBody.Meta.Total, len(listBody.Data))
+	}
+	if listBody.Data[0].ID != second.Data.OrderID {
+		t.Errorf("newest order = %s, want %s", listBody.Data[0].ID, second.Data.OrderID)
+	}
+	if listBody.Data[0].Total != 30000 || len(listBody.Data[0].Items) != 1 {
+		t.Errorf("order 1 total/items = %d/%d, want 30000/1", listBody.Data[0].Total, len(listBody.Data[0].Items))
+	}
+	if listBody.Data[1].ID != first.Data.OrderID {
+		t.Errorf("older order = %s, want %s", listBody.Data[1].ID, first.Data.OrderID)
+	}
+	if listBody.Data[1].Total != 100000 || len(listBody.Data[1].Items) != 1 {
+		t.Errorf("order 2 total/items = %d/%d, want 100000/1", listBody.Data[1].Total, len(listBody.Data[1].Items))
+	}
+
+	// detail
+	rec = ordersRequest(t, h, http.MethodGet, "/orders/"+second.Data.OrderID, second.Data.OrderID, token)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("detail status = %d", rec.Code)
+	}
+	var detail struct {
+		Data struct {
+			ID      string `json:"id"`
+			Status  string `json:"status"`
+			Items   []any  `json:"items"`
+			Address string `json:"shipping_address"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &detail); err != nil {
+		t.Fatal(err)
+	}
+	if detail.Data.Status != "PENDING" || len(detail.Data.Items) != 1 {
+		t.Errorf("detail = %+v, want PENDING + 1 item", detail.Data)
+	}
+}
+
+func TestOrderDetailOwnershipForbidden(t *testing.T) {
+	h, pool := newOrderHandler(t)
+	ownerEmail := "orders-owner@example.com"
+	otherEmail := "orders-other@example.com"
+	ownerID, itemID, addrID, _ := seedCheckoutUser(t, pool, ownerEmail, 50000, 10, 1)
+	seedUser(t, pool, otherEmail, "abc12345", "active")
+	defer cleanupOrderUser(t, pool, ownerEmail)
+	defer cleanupOrderUser(t, pool, otherEmail)
+
+	rec := checkoutRequest(t, h, userToken(t, ownerID, "user"),
+		`{"cart_item_ids":["`+itemID+`"],"address_id":"`+addrID+`"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("checkout status = %d", rec.Code)
+	}
+	var body struct {
+		Data struct {
+			OrderID string `json:"order_id"`
+		} `json:"data"`
+	}
+	json.Unmarshal(rec.Body.Bytes(), &body)
+
+	var otherID string
+	pool.QueryRow(context.Background(), `SELECT id FROM users WHERE email = $1`, otherEmail).Scan(&otherID)
+
+	// other user cannot view owner's order -> 403
+	rec = ordersRequest(t, h, http.MethodGet, "/orders/"+body.Data.OrderID, body.Data.OrderID, userToken(t, otherID, "user"))
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rec.Code)
+	}
+
+	// nonexistent order -> 404
+	rec = ordersRequest(t, h, http.MethodGet, "/orders/00000000-0000-0000-0000-000000000000", "00000000-0000-0000-0000-000000000000", userToken(t, otherID, "user"))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
 	}
 }
