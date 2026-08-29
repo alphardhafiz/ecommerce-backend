@@ -38,7 +38,7 @@ func (o *Order) Checkout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	order, err := o.svc.Checkout(r.Context(), claims.UserID, req.CartItemIDs, req.AddressID)
+	order, tx, err := o.svc.Checkout(r.Context(), claims.UserID, req.CartItemIDs, req.AddressID)
 	if err != nil {
 		o.respondError(w, err)
 		return
@@ -50,7 +50,10 @@ func (o *Order) Checkout(w http.ResponseWriter, r *http.Request) {
 			"order_id":     order.ID,
 			"total_amount": order.TotalAmount,
 			"status":       order.Status,
-			"payment":      nil, // payment stub: Midtrans integration lands in Fase 6
+			"payment": map[string]any{
+				"snap_token":   tx.Token,
+				"redirect_url": tx.RedirectURL,
+			},
 		},
 	})
 }

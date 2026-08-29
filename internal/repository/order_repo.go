@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"ecommerce/server/internal/model"
+	"ecommerce/server/internal/payment"
 )
 
 var (
@@ -22,29 +23,48 @@ var (
 )
 
 type OrderRepo struct {
-	pool *pgxpool.Pool
+	pool    *pgxpool.Pool
+	gateway paymentGateway
+}
+
+// paymentGateway is the subset of the Midtrans client checkout needs (PRD
+// F.1: create Snap transaction inside the checkout transaction). Injected
+// via WithGateway so tests can stub failures; nil = dev stub (no real key).
+type paymentGateway interface {
+	CreateTransaction(ctx context.Context, p payment.TransactionParams) (*payment.Transaction, error)
 }
 
 func NewOrderRepo(pool *pgxpool.Pool) *OrderRepo {
 	return &OrderRepo{pool: pool}
 }
 
+func (r *OrderRepo) WithGateway(g paymentGateway) *OrderRepo {
+	r.gateway = g
+	return r
+}
+
 // Checkout creates a PENDING order from the user's selected cart items in a
-// single transaction (PRD C.8, G):
+// single transaction (PRD C.8, F.1, G):
 //  1. snapshot the address (not a FK)
 //  2. re-validate products (exists, active, not soft-deleted) and lock their
 //     rows with SELECT ... FOR UPDATE in consistent id order (deadlock-free)
 //  3. re-read price from DB — request bodies carry no financial values
 //  4. decrement stock, insert order + order_items (snapshots), delete the
 //     checked-out cart lines
+//  5. create the Midtrans Snap transaction and insert the payments record
+//     (PENDING) — if Midtrans fails, the whole transaction rolls back (no
+//     order, no stock change, no payment row)
+//
+// Without a gateway (dev, no MIDTRANS_SERVER_KEY) a stub snap token is
+// returned so the checkout flow still works locally.
 //
 // Returns ErrCartEmpty when no (valid) cart line matches, ErrInvalidAddress
 // when the address is missing or belongs to another user, ErrProductInactive,
 // ErrInsufficientStock, ErrProductNotFound.
-func (r *OrderRepo) Checkout(ctx context.Context, userID string, cartItemIDs []string, addressID string) (*model.Order, error) {
+func (r *OrderRepo) Checkout(ctx context.Context, userID string, cartItemIDs []string, addressID string) (*model.Order, *payment.Transaction, error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer tx.Rollback(ctx)
 
@@ -54,9 +74,9 @@ func (r *OrderRepo) Checkout(ctx context.Context, userID string, cartItemIDs []s
 		 FROM addresses
 		 WHERE id = $1 AND user_id = $2`, addressID, userID).Scan(&recipientName, &phone, &shippingAddress); err != nil {
 		if err == pgx.ErrNoRows {
-			return nil, ErrInvalidAddress
+			return nil, nil, ErrInvalidAddress
 		}
-		return nil, err
+		return nil, nil, err
 	}
 
 	rows, err := tx.Query(ctx,
@@ -65,7 +85,7 @@ func (r *OrderRepo) Checkout(ctx context.Context, userID string, cartItemIDs []s
 		 JOIN carts c ON c.id = ci.cart_id
 		 WHERE c.user_id = $1 AND ci.id = ANY($2)`, userID, cartItemIDs)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	type cartLine struct {
@@ -78,16 +98,16 @@ func (r *OrderRepo) Checkout(ctx context.Context, userID string, cartItemIDs []s
 		var l cartLine
 		if err := rows.Scan(&l.itemID, &l.productID, &l.qty); err != nil {
 			rows.Close()
-			return nil, err
+			return nil, nil, err
 		}
 		lines = append(lines, l)
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if len(lines) == 0 || len(lines) != len(cartItemIDs) {
-		return nil, ErrCartEmpty
+		return nil, nil, ErrCartEmpty
 	}
 
 	productIDs := make([]string, len(lines))
@@ -103,7 +123,7 @@ func (r *OrderRepo) Checkout(ctx context.Context, userID string, cartItemIDs []s
 		 ORDER BY id
 		 FOR UPDATE`, productIDs)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer prodRows.Close()
 
@@ -119,15 +139,15 @@ func (r *OrderRepo) Checkout(ctx context.Context, userID string, cartItemIDs []s
 	for prodRows.Next() {
 		p := &productLock{}
 		if err := prodRows.Scan(&p.id, &p.name, &p.price, &p.stock, &p.isActive, &p.isDeleted); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		locked[p.id] = p
 	}
 	if err := prodRows.Err(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if len(locked) != len(productIDs) {
-		return nil, ErrProductNotFound
+		return nil, nil, ErrProductNotFound
 	}
 
 	var total int64
@@ -140,13 +160,13 @@ func (r *OrderRepo) Checkout(ctx context.Context, userID string, cartItemIDs []s
 	for _, l := range lines {
 		p, ok := locked[l.productID]
 		if !ok {
-			return nil, ErrProductNotFound
+			return nil, nil, ErrProductNotFound
 		}
 		if p.isDeleted || !p.isActive {
-			return nil, &ProductError{Code: "PRODUCT_INACTIVE", ProductID: p.id, ProductName: p.name}
+			return nil, nil, &ProductError{Code: "PRODUCT_INACTIVE", ProductID: p.id, ProductName: p.name}
 		}
 		if p.stock < l.qty {
-			return nil, &ProductError{Code: "PRODUCT_OUT_OF_STOCK", ProductID: p.id, ProductName: p.name}
+			return nil, nil, &ProductError{Code: "PRODUCT_OUT_OF_STOCK", ProductID: p.id, ProductName: p.name}
 		}
 		total += p.price * int64(l.qty)
 		items = append(items, item{line: l, prod: p, price: p.price})
@@ -156,7 +176,7 @@ func (r *OrderRepo) Checkout(ctx context.Context, userID string, cartItemIDs []s
 		if _, err := tx.Exec(ctx,
 			`UPDATE products SET stock = stock - $1, updated_at = now() WHERE id = $2`,
 			it.line.qty, it.prod.id); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 
@@ -173,7 +193,7 @@ func (r *OrderRepo) Checkout(ctx context.Context, userID string, cartItemIDs []s
 		 VALUES ($1, 'PENDING', $2, $3, $4, $5, now() + interval '60 minutes')
 		 RETURNING id, created_at, updated_at`,
 		order.UserID, order.TotalAmount, order.RecipientName, order.Phone, order.ShippingAddress).Scan(&order.ID, &order.CreatedAt, &order.UpdatedAt); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	for _, it := range items {
@@ -181,7 +201,7 @@ func (r *OrderRepo) Checkout(ctx context.Context, userID string, cartItemIDs []s
 			`INSERT INTO order_items (order_id, product_id, product_name, price, quantity, subtotal)
 			 VALUES ($1, $2, $3, $4, $5, $6)`,
 			order.ID, it.prod.id, it.prod.name, it.price, it.line.qty, it.price*int64(it.line.qty)); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 
@@ -191,10 +211,31 @@ func (r *OrderRepo) Checkout(ctx context.Context, userID string, cartItemIDs []s
 	}
 	if _, err := tx.Exec(ctx,
 		`DELETE FROM cart_items WHERE id = ANY($1)`, cartItemIDsForDelete); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
-	return order, tx.Commit(ctx)
+	// Create the Midtrans transaction inside the DB transaction: on failure
+	// nothing is committed (PRD F.1: rollback all). order.ID doubles as the
+	// Midtrans order_id (unique, payments.midtrans_order_id).
+	txInfo := &payment.Transaction{
+		Token:       "dev-" + order.ID,
+		RedirectURL: "https://app.sandbox.midtrans.com/snap/v3/redirection/dev-" + order.ID,
+	}
+	if r.gateway != nil {
+		txInfo, err = r.gateway.CreateTransaction(ctx, payment.TransactionParams{OrderID: order.ID, GrossAmount: total})
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO payments (order_id, midtrans_order_id, status, amount)
+		 VALUES ($1, $2, 'PENDING', $3)`,
+		order.ID, order.ID, total); err != nil {
+		return nil, nil, err
+	}
+
+	return order, txInfo, tx.Commit(ctx)
 }
 
 const orderCols = `id, user_id, status, total_amount::bigint, recipient_name, phone, shipping_address, expired_at, created_at, updated_at`

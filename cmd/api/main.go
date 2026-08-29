@@ -16,6 +16,7 @@ import (
 	jwtpkg "ecommerce/server/internal/jwt"
 	"ecommerce/server/internal/mail"
 	"ecommerce/server/internal/middleware"
+	"ecommerce/server/internal/payment"
 	"ecommerce/server/internal/repository"
 	"ecommerce/server/internal/service"
 	"ecommerce/server/internal/storage"
@@ -79,6 +80,9 @@ func main() {
 	addressSvc := service.NewAddressService(addressRepo)
 	addressHandler := handler.NewAddress(addressSvc)
 	orderRepo := repository.NewOrderRepo(pool)
+	if cfg.MidtransServerKey != "" {
+		orderRepo.WithGateway(payment.New(cfg.MidtransServerKey, cfg.MidtransIsProduction))
+	}
 	orderSvc := service.NewOrderService(orderRepo)
 	orderHandler := handler.NewOrder(orderSvc)
 

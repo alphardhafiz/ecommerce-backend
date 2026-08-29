@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,6 +15,7 @@ import (
 
 	jwtpkg "ecommerce/server/internal/jwt"
 	"ecommerce/server/internal/middleware"
+	"ecommerce/server/internal/payment"
 	"ecommerce/server/internal/repository"
 	"ecommerce/server/internal/service"
 )
@@ -32,11 +34,12 @@ func newOrderHandler(t *testing.T) (*Order, *pgxpool.Pool) {
 	return NewOrder(service.NewOrderService(repository.NewOrderRepo(pool))), pool
 }
 
-// cleanupOrderUser removes orders (FK orders.user_id has no cascade) before
+// cleanupOrderUser removes payments + orders (FKs without cascade) before
 // the user row.
 func cleanupOrderUser(t *testing.T, pool *pgxpool.Pool, email string) {
 	t.Helper()
 	ctx := context.Background()
+	pool.Exec(ctx, `DELETE FROM payments WHERE order_id IN (SELECT id FROM orders WHERE user_id IN (SELECT id FROM users WHERE email = $1))`, email)
 	pool.Exec(ctx, `DELETE FROM orders WHERE user_id IN (SELECT id FROM users WHERE email = $1)`, email)
 	pool.Exec(ctx, `DELETE FROM users WHERE email = $1`, email)
 }
@@ -109,6 +112,10 @@ func TestOrderCheckoutSuccess(t *testing.T) {
 			OrderID     string `json:"order_id"`
 			TotalAmount int64  `json:"total_amount"`
 			Status      string `json:"status"`
+			Payment     struct {
+				SnapToken   string `json:"snap_token"`
+				RedirectURL string `json:"redirect_url"`
+			} `json:"payment"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
@@ -119,6 +126,18 @@ func TestOrderCheckoutSuccess(t *testing.T) {
 	}
 	if body.Data.Status != "PENDING" {
 		t.Errorf("status = %s, want PENDING", body.Data.Status)
+	}
+	if body.Data.Payment.SnapToken == "" || !strings.Contains(body.Data.Payment.RedirectURL, "midtrans.com") {
+		t.Errorf("payment = %+v, want dev stub snap_token + redirect_url", body.Data.Payment)
+	}
+
+	// payments record created (PENDING, amount snapshot)
+	var payStatus string
+	var payAmount int64
+	pool.QueryRow(context.Background(),
+		`SELECT status, amount::bigint FROM payments WHERE order_id = $1`, body.Data.OrderID).Scan(&payStatus, &payAmount)
+	if payStatus != "PENDING" || payAmount != 100000 {
+		t.Errorf("payment row = %s/%d, want PENDING/100000", payStatus, payAmount)
 	}
 
 	// stock decremented
@@ -150,6 +169,61 @@ func TestOrderCheckoutSuccess(t *testing.T) {
 	if n != 0 {
 		t.Error("checked-out cart item must be deleted")
 	}
+}
+
+func TestOrderCheckoutMidtransFailureRollsBack(t *testing.T) {
+	url := os.Getenv("DATABASE_URL")
+	if url == "" {
+		t.Skip("DATABASE_URL not set, skipping order handler test")
+	}
+	pool, err := pgxpool.New(context.Background(), url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+
+	repo := repository.NewOrderRepo(pool).WithGateway(failingGateway{})
+	h := NewOrder(service.NewOrderService(repo))
+
+	email := "checkout-mt-fail@example.com"
+	userID, itemID, addrID, prodID := seedCheckoutUser(t, pool, email, 50000, 10, 2)
+	defer cleanupOrderUser(t, pool, email)
+
+	rec := checkoutRequest(t, h, userToken(t, userID, "user"),
+		`{"cart_item_ids":["`+itemID+`"],"address_id":"`+addrID+`"}`)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500, body: %s", rec.Code, rec.Body.String())
+	}
+
+	// whole transaction rolled back: no order, no payment, stock intact,
+	// cart line intact
+	var n int
+	pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM orders o JOIN users u ON u.id = o.user_id WHERE u.email = $1`, email).Scan(&n)
+	if n != 0 {
+		t.Error("order must not exist after Midtrans failure")
+	}
+	pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM payments p JOIN orders o ON o.id = p.order_id JOIN users u ON u.id = o.user_id WHERE u.email = $1`, email).Scan(&n)
+	if n != 0 {
+		t.Error("payment must not exist after Midtrans failure")
+	}
+	var stock int
+	pool.QueryRow(context.Background(), `SELECT stock FROM products WHERE id = $1`, prodID).Scan(&stock)
+	if stock != 10 {
+		t.Errorf("stock = %d, want unchanged 10", stock)
+	}
+	pool.QueryRow(context.Background(), `SELECT count(*) FROM cart_items WHERE id = $1`, itemID).Scan(&n)
+	if n != 1 {
+		t.Error("cart line must remain after Midtrans failure")
+	}
+}
+
+// failingGateway simulates a Midtrans outage so checkout can prove rollback.
+type failingGateway struct{}
+
+func (failingGateway) CreateTransaction(ctx context.Context, _ payment.TransactionParams) (*payment.Transaction, error) {
+	return nil, errors.New("midtrans down")
 }
 
 func TestOrderCheckoutValidation(t *testing.T) {

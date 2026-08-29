@@ -80,7 +80,7 @@ Pecahan task per fase mengikuti PRD §U (Development Roadmap). Sumber kebenaran:
 ## Fase 6 — Midtrans integration
 
 - [x] Midtrans Snap client (`internal/payment`): create transaction, status check
-- [ ] Integrasi ke checkout: insert `payments`, rollback semua jika Midtrans gagal
+- [x] Integrasi ke checkout: insert `payments`, rollback semua jika Midtrans gagal
 - [ ] `POST /payments/webhook`: verifikasi signature SHA-512 + server-to-server status check
 - [ ] Idempotency: cek status sebelum update (row lock), log `payment_notifications`, duplicate → tetap 200
 - [ ] Handle `success`/`expire`/`cancel` (stock kembali di transaction yang sama, `orders` + `payments` satu transaction)
