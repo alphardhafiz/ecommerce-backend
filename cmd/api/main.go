@@ -86,7 +86,7 @@ func main() {
 	}
 	orderSvc := service.NewOrderService(orderRepo)
 	orderHandler := handler.NewOrder(orderSvc)
-	paymentHandler := handler.NewPayment(paymentClient)
+	paymentHandler := handler.NewPayment(paymentClient, service.NewPaymentService(repository.NewPaymentRepo(pool)))
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", health.Liveness)

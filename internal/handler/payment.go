@@ -3,10 +3,14 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 
 	"ecommerce/server/internal/payment"
+	"ecommerce/server/internal/repository"
+	"ecommerce/server/internal/service"
 )
 
 // PaymentGateway is the Midtrans surface the webhook needs (PRD F.2):
@@ -19,19 +23,26 @@ type PaymentGateway interface {
 
 type Payment struct {
 	gateway PaymentGateway
+	svc     *service.PaymentService
 }
 
-func NewPayment(g PaymentGateway) *Payment {
-	return &Payment{gateway: g}
+func NewPayment(g PaymentGateway, svc *service.PaymentService) *Payment {
+	return &Payment{gateway: g, svc: svc}
 }
 
 // Webhook receives Midtrans notifications (PRD F.2). It never trusts the
 // raw payload: signature must match (else 401) and the server-to-server
-// status check must succeed (else 500, Midtrans retries). State mutations
-// (idempotency, payment_notifications, order/payment status) land in T4/T5.
+// status check must succeed (else 500, Midtrans retries). Every valid
+// delivery is then applied idempotently (audit log + status update only
+// when it changes, PRD C.10); duplicates still get 200.
 func (p *Payment) Webhook(w http.ResponseWriter, r *http.Request) {
+	raw, err := io.ReadAll(r.Body)
+	if err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid request body", "INVALID_REQUEST", nil)
+		return
+	}
 	var n payment.Notification
-	if err := json.NewDecoder(r.Body).Decode(&n); err != nil {
+	if err := json.Unmarshal(raw, &n); err != nil {
 		respondError(w, http.StatusBadRequest, "Invalid request body", "INVALID_REQUEST", nil)
 		return
 	}
@@ -53,6 +64,24 @@ func (p *Payment) Webhook(w http.ResponseWriter, r *http.Request) {
 	if st.TransactionStatus != "" && st.TransactionStatus != n.TransactionStatus {
 		slog.Warn("webhook payload differs from Midtrans status check",
 			"order_id", n.OrderID, "payload", n.TransactionStatus, "server", st.TransactionStatus)
+	}
+
+	mapped, err := p.svc.ProcessNotification(r.Context(), n, raw)
+	if err != nil {
+		if errors.Is(err, repository.ErrPaymentNotFound) {
+			// Signature is valid but we don't know this payment: log the
+			// anomaly (PRD S.7) and still reply 200 so Midtrans stops
+			// retrying this delivery.
+			slog.Warn("webhook for unknown payment", "order_id", n.OrderID)
+			respondJSON(w, http.StatusOK, map[string]any{"success": true, "data": nil})
+			return
+		}
+		respondError(w, http.StatusInternalServerError, "Internal server error", "INTERNAL_ERROR", nil)
+		return
+	}
+
+	if mapped == "" {
+		slog.Warn("webhook with unmapped transaction_status", "order_id", n.OrderID, "status", n.TransactionStatus)
 	}
 
 	respondJSON(w, http.StatusOK, map[string]any{"success": true, "data": nil})

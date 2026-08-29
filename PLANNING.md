@@ -82,7 +82,7 @@ Pecahan task per fase mengikuti PRD §U (Development Roadmap). Sumber kebenaran:
 - [x] Midtrans Snap client (`internal/payment`): create transaction, status check
 - [x] Integrasi ke checkout: insert `payments`, rollback semua jika Midtrans gagal
 - [x] `POST /payments/webhook`: verifikasi signature SHA-512 + server-to-server status check
-- [ ] Idempotency: cek status sebelum update (row lock), log `payment_notifications`, duplicate → tetap 200
+- [x] Idempotency: cek status sebelum update (row lock), log `payment_notifications`, duplicate → tetap 200
 - [ ] Handle `success`/`expire`/`cancel` (stock kembali di transaction yang sama, `orders` + `payments` satu transaction)
 - [ ] Scheduled job expire order PENDING > 60 menit (`internal/jobs`)
 - [ ] `GET /orders/:id/payment` (ownership check)
