@@ -86,7 +86,7 @@ Pecahan task per fase mengikuti PRD §U (Development Roadmap). Sumber kebenaran:
 - [x] Handle `success`/`expire`/`cancel` (stock kembali di transaction yang sama, `orders` + `payments` satu transaction)
 - [x] Scheduled job expire order PENDING > 60 menit (`internal/jobs`)
 - [x] `GET /orders/:id/payment` (ownership check)
-- [ ] Test: webhook payload valid/invalid signature + duplicate delivery
+- [x] Test: webhook payload valid/invalid signature + duplicate delivery
 
 **DoD (PRD §U.6):** full flow sandbox berhasil: checkout → bayar → webhook → order PAID.
 
