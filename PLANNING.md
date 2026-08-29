@@ -73,7 +73,7 @@ Pecahan task per fase mengikuti PRD §U (Development Roadmap). Sumber kebenaran:
 - [x] `GET /orders` (pagination, milik sendiri), `GET /orders/:id` (ownership check → 403)
 - [x] `POST /orders/:id/cancel` (hanya PENDING, stock kembali dalam transaction)
 - [x] `GET /admin/orders`, `PATCH /admin/orders/:id/status` (state transition PRD §C.9, final state terkunci)
-- [ ] Test: **concurrency checkout stock=1** (2 goroutine, hanya 1 sukses)
+- [x] Test: **concurrency checkout stock=1** (2 goroutine, hanya 1 sukses)
 
 **DoD (PRD §U.5):** checkout membuat order PENDING dengan stock berkurang benar, concurrency test lulus.
 
