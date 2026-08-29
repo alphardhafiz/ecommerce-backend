@@ -92,8 +92,8 @@ Pecahan task per fase mengikuti PRD §U (Development Roadmap). Sumber kebenaran:
 
 ## Fase 7 — Admin dashboard
 
-- [ ] `GET /admin/dashboard` (total users/products/orders per status/revenue/low stock + filter `period`)
-- [ ] Test: angka sesuai data seed
+- [x] `GET /admin/dashboard` (total users/products/orders per status/revenue/low stock + filter `period`)
+okey- [ ] Test: angka sesuai data seed
 
 **DoD (PRD §U.7):** dashboard menampilkan angka akurat sesuai DB.
 

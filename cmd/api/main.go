@@ -88,6 +88,7 @@ func main() {
 	orderSvc := service.NewOrderService(orderRepo)
 	orderHandler := handler.NewOrder(orderSvc)
 	paymentHandler := handler.NewPayment(paymentClient, service.NewPaymentService(repository.NewPaymentRepo(pool), orderRepo))
+	dashboardHandler := handler.NewDashboard(service.NewDashboardService(repository.NewDashboardRepo(pool)))
 
 	// Expire overdue PENDING orders every minute (PRD C.9, F.3).
 	go jobs.ExpireOrders(context.Background(), orderRepo, time.Minute, log)
@@ -130,6 +131,7 @@ func main() {
 	}
 	mux.Handle("GET /admin/orders", adminRequired(http.HandlerFunc(orderHandler.ListAll)))
 	mux.Handle("PATCH /admin/orders/{id}/status", adminRequired(http.HandlerFunc(orderHandler.UpdateStatus)))
+	mux.Handle("GET /admin/dashboard", adminRequired(http.HandlerFunc(dashboardHandler.Get)))
 	mux.Handle("GET /admin/users", adminRequired(http.HandlerFunc(userHandler.ListUsers)))
 	mux.Handle("PATCH /admin/users/{id}/status", adminRequired(http.HandlerFunc(userHandler.UpdateUserStatus)))
 	mux.HandleFunc("GET /categories", categoryHandler.ListActive)
