@@ -3,11 +3,14 @@ package payment
 import (
 	"bytes"
 	"context"
+	"crypto/sha512"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -83,6 +86,26 @@ func (c *Client) GetStatus(ctx context.Context, orderID string) (*Status, error)
 		return nil, fmt.Errorf("midtrans status check: %w", err)
 	}
 	return &out, nil
+}
+
+// Notification is the payload Midtrans POSTs to /payments/webhook (PRD
+// F.2). Financial fields stay strings: signature verification concatenates
+// them exactly as Midtrans sent them.
+type Notification struct {
+	OrderID           string `json:"order_id"`
+	StatusCode        string `json:"status_code"`
+	GrossAmount       string `json:"gross_amount"`
+	SignatureKey      string `json:"signature_key"`
+	TransactionStatus string `json:"transaction_status"`
+	PaymentType       string `json:"payment_type"`
+}
+
+// VerifySignature checks that the notification's signature_key equals
+// SHA-512(order_id + status_code + gross_amount + server_key) (PRD C.10).
+// Only a holder of the server key can forge this.
+func (c *Client) VerifySignature(n Notification) bool {
+	sum := sha512.Sum512([]byte(n.OrderID + n.StatusCode + n.GrossAmount + c.serverKey))
+	return strings.EqualFold(hex.EncodeToString(sum[:]), n.SignatureKey)
 }
 
 func (c *Client) doJSON(ctx context.Context, method, url string, in, out any) error {

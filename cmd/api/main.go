@@ -80,15 +80,18 @@ func main() {
 	addressSvc := service.NewAddressService(addressRepo)
 	addressHandler := handler.NewAddress(addressSvc)
 	orderRepo := repository.NewOrderRepo(pool)
+	paymentClient := payment.New(cfg.MidtransServerKey, cfg.MidtransIsProduction)
 	if cfg.MidtransServerKey != "" {
-		orderRepo.WithGateway(payment.New(cfg.MidtransServerKey, cfg.MidtransIsProduction))
+		orderRepo.WithGateway(paymentClient)
 	}
 	orderSvc := service.NewOrderService(orderRepo)
 	orderHandler := handler.NewOrder(orderSvc)
+	paymentHandler := handler.NewPayment(paymentClient)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", health.Liveness)
 	mux.HandleFunc("GET /health/ready", health.Readiness)
+	mux.HandleFunc("POST /payments/webhook", paymentHandler.Webhook)
 	mux.HandleFunc("POST /auth/register", auth.Register)
 	mux.HandleFunc("POST /auth/login", auth.Login)
 	mux.HandleFunc("POST /auth/refresh", auth.Refresh)
