@@ -27,13 +27,17 @@ const (
 	// productListCacheTTL / productListKeyPrefix per PRD H.1.
 	productListCacheTTL  = 5 * time.Minute
 	productListKeyPrefix = "products:list:"
+	// productDetailCacheTTL / productDetailKeyPrefix per PRD H.2.
+	productDetailCacheTTL  = 10 * time.Minute
+	productDetailKeyPrefix = "product:detail:"
 )
 
-// listCache is the Redis surface the product service needs (PRD H.1);
+// listCache is the Redis surface the product service needs (PRD H.1/H.2);
 // *cache.Cache satisfies it, tests can stub failures.
 type listCache interface {
 	Get(ctx context.Context, key string) ([]byte, error)
 	Set(ctx context.Context, key string, val []byte, ttl time.Duration) error
+	Delete(ctx context.Context, keys ...string) error
 	InvalidatePrefix(ctx context.Context, prefix string) error
 }
 
@@ -89,6 +93,7 @@ func (s *ProductService) Update(ctx context.Context, id string, in ProductInput)
 		return nil, err
 	}
 	s.invalidateList(ctx)
+	s.invalidateDetail(ctx, id)
 	return p, nil
 }
 
@@ -96,6 +101,7 @@ func (s *ProductService) SoftDelete(ctx context.Context, id string) error {
 	err := s.products.SoftDelete(ctx, id)
 	if err == nil {
 		s.invalidateList(ctx)
+		s.invalidateDetail(ctx, id)
 	}
 	return err
 }
@@ -104,6 +110,7 @@ func (s *ProductService) UpdateStatus(ctx context.Context, id string, isActive b
 	p, err := s.products.SetActive(ctx, id, isActive)
 	if err == nil {
 		s.invalidateList(ctx)
+		s.invalidateDetail(ctx, id)
 	}
 	return p, err
 }
@@ -115,6 +122,7 @@ func (s *ProductService) UpdateStock(ctx context.Context, id string, stock int) 
 	p, err := s.products.SetStock(ctx, id, stock)
 	if err == nil {
 		s.invalidateList(ctx)
+		s.invalidateDetail(ctx, id)
 	}
 	return p, err
 }
@@ -200,8 +208,48 @@ func (s *ProductService) invalidateList(ctx context.Context) {
 	}
 }
 
+func productDetailKey(id string) string {
+	return productDetailKeyPrefix + id
+}
+
+// invalidateDetail drops the single product:detail:{id} key (PRD H.2:
+// targeted, no prefix scan).
+func (s *ProductService) invalidateDetail(ctx context.Context, id string) {
+	if s.cache == nil {
+		return
+	}
+	if err := s.cache.Delete(ctx, productDetailKey(id)); err != nil {
+		slog.Warn("product detail cache invalidation failed", "error", err)
+	}
+}
+
+// GetDetail returns a product, cached per id (PRD H.2: TTL 10m, targeted
+// invalidation on product mutations). Redis failures fall back to the DB.
 func (s *ProductService) GetDetail(ctx context.Context, id string) (*model.Product, error) {
-	return s.products.FindPublicByID(ctx, id)
+	key := productDetailKey(id)
+	if s.cache != nil {
+		if raw, err := s.cache.Get(ctx, key); err == nil {
+			p := &model.Product{}
+			if json.Unmarshal(raw, p) == nil {
+				return p, nil
+			}
+			slog.Warn("corrupt product detail cache entry", "key", key)
+		}
+	}
+
+	p, err := s.products.FindPublicByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+
+	if s.cache != nil {
+		if raw, err := json.Marshal(p); err == nil {
+			if err := s.cache.Set(ctx, key, raw, productDetailCacheTTL); err != nil {
+				slog.Warn("product detail cache set failed", "error", err)
+			}
+		}
+	}
+	return p, nil
 }
 
 // UploadImage validates the file (MIME + size, PRD R.12), renames to a UUID,

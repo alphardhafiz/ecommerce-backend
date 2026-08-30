@@ -64,6 +64,7 @@ func (deadCache) Get(ctx context.Context, key string) ([]byte, error) {
 func (deadCache) Set(ctx context.Context, key string, val []byte, ttl time.Duration) error {
 	return errors.New("redis down")
 }
+func (deadCache) Delete(ctx context.Context, keys ...string) error { return errors.New("redis down") }
 func (deadCache) InvalidatePrefix(ctx context.Context, prefix string) error {
 	return errors.New("redis down")
 }
@@ -138,6 +139,85 @@ func TestProductListCacheRedisDown(t *testing.T) {
 	}
 	if total != 1 || len(products) != 1 {
 		t.Errorf("List with Redis down = %d products, total %d, want 1/1", len(products), total)
+	}
+}
+
+// TestProductDetailCacheHitMiss: first call misses and fills the detail
+// cache, the second returns from Redis (same product).
+func TestProductDetailCacheHitMiss(t *testing.T) {
+	svc, c := testProductServiceWithCache(t)
+	ctx := context.Background()
+
+	prod := seedServiceProduct(t, svc, "Detail Hit Test", 45000, 7)
+	defer svc.products.SoftDelete(ctx, prod.ID)
+	key := productDetailKey(prod.ID)
+	defer c.Delete(ctx, key)
+
+	got, err := svc.GetDetail(ctx, prod.ID)
+	if err != nil || got.ID != prod.ID {
+		t.Fatalf("first GetDetail = %+v, err %v", got, err)
+	}
+	got2, err := svc.GetDetail(ctx, prod.ID)
+	if err != nil || got2.ID != prod.ID || got2.Name != "Detail Hit Test" {
+		t.Fatalf("second GetDetail = %+v, err %v", got2, err)
+	}
+	if _, err := c.Get(ctx, key); err != nil {
+		t.Errorf("detail cache entry missing after first GetDetail: %v", err)
+	}
+}
+
+// TestProductDetailCacheInvalidatedTargeted: mutating one product deletes
+// only its detail key (and the list prefix), never another product's.
+func TestProductDetailCacheInvalidatedTargeted(t *testing.T) {
+	svc, c := testProductServiceWithCache(t)
+	ctx := context.Background()
+
+	a := seedServiceProduct(t, svc, "Detail Inval A", 45000, 7)
+	b := seedServiceProduct(t, svc, "Detail Inval B", 45000, 7)
+	defer svc.products.SoftDelete(ctx, a.ID)
+	defer svc.products.SoftDelete(ctx, b.ID)
+
+	keyA, keyB := productDetailKey(a.ID), productDetailKey(b.ID)
+	defer c.Delete(ctx, keyA, keyB)
+
+	if _, err := svc.GetDetail(ctx, a.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.GetDetail(ctx, b.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	// stock update on A invalidates A only
+	if _, err := svc.UpdateStock(ctx, a.ID, 3); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Get(ctx, keyA); err == nil {
+		t.Error("detail cache for A must be invalidated after A's stock update")
+	}
+	if _, err := c.Get(ctx, keyB); err != nil {
+		t.Error("detail cache for B must survive A's stock update (targeted invalidation)")
+	}
+}
+
+// TestProductDetailCacheRedisDown: unreachable Redis must not break detail
+// fetching (fail-open, PRD H).
+func TestProductDetailCacheRedisDown(t *testing.T) {
+	url := os.Getenv("DATABASE_URL")
+	if url == "" {
+		t.Skip("DATABASE_URL not set, skipping cache test")
+	}
+	pool := newTestPool(t)
+	svc := NewProductService(repository.NewProductRepo(pool)).WithCache(deadCache{})
+	ctx := context.Background()
+	prod := seedServiceProduct(t, svc, "Detail Down Test", 45000, 7)
+	defer svc.products.SoftDelete(ctx, prod.ID)
+
+	got, err := svc.GetDetail(ctx, prod.ID)
+	if err != nil {
+		t.Fatalf("GetDetail with Redis down returned error: %v", err)
+	}
+	if got.ID != prod.ID {
+		t.Errorf("GetDetail with Redis down = %s, want %s", got.ID, prod.ID)
 	}
 }
 
