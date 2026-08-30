@@ -99,12 +99,23 @@ func main() {
 	mux.HandleFunc("GET /health", health.Liveness)
 	mux.HandleFunc("GET /health/ready", health.Readiness)
 	mux.HandleFunc("POST /payments/webhook", paymentHandler.Webhook)
-	mux.HandleFunc("POST /auth/register", auth.Register)
-	mux.HandleFunc("POST /auth/login", auth.Login)
+	// brute-force surface: strict, fail-closed (PRD H.3)
+	authStrict := middleware.RateLimit(redisCache, middleware.RateLimitConfig{
+		Limit: 5, Window: 15 * time.Minute, FailClosed: true,
+	})
+	mux.Handle("POST /auth/register", authStrict(http.HandlerFunc(auth.Register)))
+	mux.Handle("POST /auth/login", authStrict(http.HandlerFunc(auth.Login)))
 	mux.HandleFunc("POST /auth/refresh", auth.Refresh)
 	mux.HandleFunc("POST /auth/logout", auth.Logout)
 	mux.HandleFunc("POST /auth/forgot-password", auth.ForgotPassword)
 	mux.HandleFunc("POST /auth/reset-password", auth.ResetPassword)
+	// hot public reads: generous, fail-open (PRD H.3)
+	publicLax := middleware.RateLimit(redisCache, middleware.RateLimitConfig{
+		Limit: 100, Window: time.Minute,
+	})
+	mux.Handle("GET /categories", publicLax(http.HandlerFunc(categoryHandler.ListActive)))
+	mux.Handle("GET /products", publicLax(http.HandlerFunc(productHandler.List)))
+	mux.Handle("GET /products/{id}", publicLax(http.HandlerFunc(productHandler.Detail)))
 	mux.Handle("GET /users/me", middleware.RequireAuth(jwtHelper)(http.HandlerFunc(userHandler.Me)))
 	mux.Handle("PATCH /users/me", middleware.RequireAuth(jwtHelper)(http.HandlerFunc(userHandler.UpdateMe)))
 	userRequired := func(next http.Handler) http.Handler {
