@@ -69,7 +69,7 @@ func main() {
 	categoryHandler := handler.NewCategory(categorySvc)
 	productRepo := repository.NewProductRepo(pool)
 	productSvc := service.NewProductService(productRepo).WithStorage(
-		storage.New(cfg.StorageEndpoint, cfg.StorageBucket, cfg.StorageAccessKeyID, cfg.StorageSecretAccessKey))
+		storage.New(cfg.StorageEndpoint, cfg.StorageBucket, cfg.StorageAccessKeyID, cfg.StorageSecretAccessKey)).WithCache(redisCache)
 	productHandler := handler.NewProduct(productSvc)
 	wishlistRepo := repository.NewWishlistRepo(pool)
 	wishlistSvc := service.NewWishlistService(wishlistRepo)

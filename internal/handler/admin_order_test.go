@@ -87,6 +87,10 @@ func TestAdminOrdersListFilterAndPagination(t *testing.T) {
 	pool.QueryRow(context.Background(), `SELECT id FROM users WHERE email = $1`, adminEmail).Scan(&adminID)
 	adminToken := userToken(t, adminID, "admin")
 
+	// baseline PENDING count: DB may hold manual E2E orders, assert deltas
+	var basePending int
+	pool.QueryRow(context.Background(), `SELECT count(*) FROM orders WHERE status = 'PENDING'`).Scan(&basePending)
+
 	seedOrderForUser(t, h, pool, userEmail1)
 	seedOrderForUser(t, h, pool, userEmail2)
 
@@ -105,7 +109,7 @@ func TestAdminOrdersListFilterAndPagination(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if body.Meta.Total < 2 || len(body.Data) < 2 {
+	if body.Meta.Total < basePending+2 || len(body.Data) < 2 {
 		t.Fatalf("want at least 2 orders from both users, got total=%d len=%d", body.Meta.Total, len(body.Data))
 	}
 
@@ -127,8 +131,8 @@ func TestAdminOrdersListFilterAndPagination(t *testing.T) {
 	if err := json.Unmarshal(rec2.Body.Bytes(), &filtered); err != nil {
 		t.Fatal(err)
 	}
-	if filtered.Meta.Total != 2 {
-		t.Errorf("filtered total = %d, want 2", filtered.Meta.Total)
+	if filtered.Meta.Total != basePending+2 {
+		t.Errorf("filtered total = %d, want %d (baseline + 2)", filtered.Meta.Total, basePending+2)
 	}
 
 	// invalid status -> 400

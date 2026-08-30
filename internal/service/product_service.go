@@ -3,11 +3,16 @@ package service
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"ecommerce/server/internal/model"
 	"ecommerce/server/internal/repository"
@@ -19,11 +24,23 @@ var ErrStorageFailure = errors.New("object storage failure")
 const (
 	maxImageSize   = 5 << 20 // 5MB (PRD R.12)
 	imageKeyPrefix = "products"
+	// productListCacheTTL / productListKeyPrefix per PRD H.1.
+	productListCacheTTL  = 5 * time.Minute
+	productListKeyPrefix = "products:list:"
 )
+
+// listCache is the Redis surface the product service needs (PRD H.1);
+// *cache.Cache satisfies it, tests can stub failures.
+type listCache interface {
+	Get(ctx context.Context, key string) ([]byte, error)
+	Set(ctx context.Context, key string, val []byte, ttl time.Duration) error
+	InvalidatePrefix(ctx context.Context, prefix string) error
+}
 
 type ProductService struct {
 	products *repository.ProductRepo
 	storage  *storage.Client
+	cache    listCache
 }
 
 func NewProductService(products *repository.ProductRepo) *ProductService {
@@ -33,6 +50,13 @@ func NewProductService(products *repository.ProductRepo) *ProductService {
 // WithStorage attaches the object-storage client for image upload/delete.
 func (s *ProductService) WithStorage(st *storage.Client) *ProductService {
 	s.storage = st
+	return s
+}
+
+// WithCache attaches the Redis cache (cache-aside, PRD H.1). Optional:
+// without it, or when Redis is down, every call hits the DB.
+func (s *ProductService) WithCache(c listCache) *ProductService {
+	s.cache = c
 	return s
 }
 
@@ -48,29 +72,51 @@ func (s *ProductService) Create(ctx context.Context, in ProductInput) (*model.Pr
 	if err := s.validate(in); err != nil {
 		return nil, err
 	}
-	return s.products.Create(ctx, in.Name, in.Description, in.Price, in.Stock, in.CategoryID)
+	p, err := s.products.Create(ctx, in.Name, in.Description, in.Price, in.Stock, in.CategoryID)
+	if err != nil {
+		return nil, err
+	}
+	s.invalidateList(ctx)
+	return p, nil
 }
 
 func (s *ProductService) Update(ctx context.Context, id string, in ProductInput) (*model.Product, error) {
 	if err := s.validate(in); err != nil {
 		return nil, err
 	}
-	return s.products.Update(ctx, id, in.Name, in.Description, in.Price, in.Stock, in.CategoryID)
+	p, err := s.products.Update(ctx, id, in.Name, in.Description, in.Price, in.Stock, in.CategoryID)
+	if err != nil {
+		return nil, err
+	}
+	s.invalidateList(ctx)
+	return p, nil
 }
 
 func (s *ProductService) SoftDelete(ctx context.Context, id string) error {
-	return s.products.SoftDelete(ctx, id)
+	err := s.products.SoftDelete(ctx, id)
+	if err == nil {
+		s.invalidateList(ctx)
+	}
+	return err
 }
 
 func (s *ProductService) UpdateStatus(ctx context.Context, id string, isActive bool) (*model.Product, error) {
-	return s.products.SetActive(ctx, id, isActive)
+	p, err := s.products.SetActive(ctx, id, isActive)
+	if err == nil {
+		s.invalidateList(ctx)
+	}
+	return p, err
 }
 
 func (s *ProductService) UpdateStock(ctx context.Context, id string, stock int) (*model.Product, error) {
 	if stock < 0 {
 		return nil, &ValidationError{Errors: []FieldError{{Field: "stock", Message: "Stock must be greater than or equal to 0"}}}
 	}
-	return s.products.SetStock(ctx, id, stock)
+	p, err := s.products.SetStock(ctx, id, stock)
+	if err == nil {
+		s.invalidateList(ctx)
+	}
+	return p, err
 }
 
 type ProductListFilter struct {
@@ -86,8 +132,26 @@ type ProductListFilter struct {
 	Offset     int
 }
 
+// List returns the public product listing, cached under a hash of the
+// query filter (PRD H.1: TTL 5m, coarse invalidation on any product
+// mutation). Redis failures are logged and ignored — the DB is the source
+// of truth (cache-aside, never a hard dependency).
 func (s *ProductService) List(ctx context.Context, f ProductListFilter) ([]*model.Product, int64, error) {
-	return s.products.ListPublic(ctx, repository.ProductFilter{
+	key := productListKey(f)
+	if s.cache != nil {
+		if raw, err := s.cache.Get(ctx, key); err == nil {
+			var cached struct {
+				Products []*model.Product `json:"products"`
+				Total    int64            `json:"total"`
+			}
+			if json.Unmarshal(raw, &cached) == nil {
+				return cached.Products, cached.Total, nil
+			}
+			slog.Warn("corrupt product list cache entry", "key", key)
+		}
+	}
+
+	products, total, err := s.products.ListPublic(ctx, repository.ProductFilter{
 		Search:     f.Search,
 		CategoryID: f.CategoryID,
 		MinPrice:   f.MinPrice,
@@ -99,6 +163,41 @@ func (s *ProductService) List(ctx context.Context, f ProductListFilter) ([]*mode
 		Limit:      f.Limit,
 		Offset:     f.Offset,
 	})
+	if err != nil {
+		return nil, 0, err
+	}
+
+	if s.cache != nil {
+		if raw, err := json.Marshal(struct {
+			Products []*model.Product `json:"products"`
+			Total    int64            `json:"total"`
+		}{products, total}); err == nil {
+			if err := s.cache.Set(ctx, key, raw, productListCacheTTL); err != nil {
+				slog.Warn("product list cache set failed", "error", err)
+			}
+		}
+	}
+	return products, total, nil
+}
+
+// productListKey hashes the full filter so each unique query has its own
+// cache entry (PRD H.1).
+func productListKey(f ProductListFilter) string {
+	raw := fmt.Sprintf("%s|%s|%d|%d|%t|%t|%t|%s|%d|%d",
+		f.Search, f.CategoryID, f.MinPrice, f.MaxPrice, f.HasMin, f.HasMax, f.InStock, f.Sort, f.Limit, f.Offset)
+	sum := sha256.Sum256([]byte(raw))
+	return productListKeyPrefix + hex.EncodeToString(sum[:])
+}
+
+// invalidateList drops every products:list:* key via SCAN+DEL (PRD H.1).
+// Coarse on purpose; failures only cost a stale-until-TTL entry.
+func (s *ProductService) invalidateList(ctx context.Context) {
+	if s.cache == nil {
+		return
+	}
+	if err := s.cache.InvalidatePrefix(ctx, productListKeyPrefix); err != nil {
+		slog.Warn("product list cache invalidation failed", "error", err)
+	}
 }
 
 func (s *ProductService) GetDetail(ctx context.Context, id string) (*model.Product, error) {

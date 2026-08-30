@@ -99,7 +99,7 @@ okey- [x] Test: angka sesuai data seed
 
 ## Fase 8 — Redis + optimization
 
-- [ ] Product list cache (`products:list:{hash}`, TTL 5m, invalidasi prefix via SCAN+DEL)
+- [x] Product list cache (`products:list:{hash}`, TTL 5m, invalidasi prefix via SCAN+DEL)
 - [ ] Product detail cache (`product:detail:{id}`, TTL 10m, invalidasi targeted)
 - [ ] Category list cache (`categories:active`, TTL 30m)
 - [ ] Rate limit Redis: login/register strict (fail-closed), endpoint umum (fail-open)
