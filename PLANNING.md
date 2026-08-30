@@ -103,7 +103,7 @@ okey- [x] Test: angka sesuai data seed
 - [x] Product detail cache (`product:detail:{id}`, TTL 10m, invalidasi targeted)
 - [x] Category list cache (`categories:active`, TTL 30m)
 - [x] Rate limit Redis: login/register strict (fail-closed), endpoint umum (fail-open)
-- [ ] Test: fallback saat Redis down
+- [x] Test: fallback saat Redis down
 
 **DoD (PRD §U.8):** cache hit terverifikasi, rate limit teruji, fallback Redis down bekerja.
 
