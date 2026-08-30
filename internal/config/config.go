@@ -14,6 +14,7 @@ type Config struct {
 	MidtransServerKey    string
 	MidtransClientKey    string
 	MidtransIsProduction bool
+	NotificationURL      string
 
 	StorageEndpoint        string
 	StorageBucket          string
@@ -36,6 +37,7 @@ func Load() (*Config, error) {
 		MidtransServerKey:      os.Getenv("MIDTRANS_SERVER_KEY"),
 		MidtransClientKey:      os.Getenv("MIDTRANS_CLIENT_KEY"),
 		MidtransIsProduction:   os.Getenv("MIDTRANS_IS_PRODUCTION") == "true",
+		NotificationURL:        os.Getenv("NOTIFICATION_URL"),
 		StorageEndpoint:        os.Getenv("STORAGE_ENDPOINT"),
 		StorageBucket:          os.Getenv("STORAGE_BUCKET"),
 		StorageAccessKeyID:     os.Getenv("STORAGE_ACCESS_KEY_ID"),

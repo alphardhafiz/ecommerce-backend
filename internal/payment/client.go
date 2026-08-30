@@ -24,10 +24,12 @@ const (
 // Client wraps the Midtrans Snap / Core APIs. Money is passed as int64 whole
 // rupiah (PRD D: no floats).
 type Client struct {
-	serverKey string
-	http      *http.Client
-	snapURL   string
-	apiURL    string
+	serverKey       string
+	http            *http.Client
+	snapURL         string
+	apiURL          string
+	notificationURL string
+	frontendURL     string
 }
 
 func New(serverKey string, isProduction bool) *Client {
@@ -41,6 +43,20 @@ func New(serverKey string, isProduction bool) *Client {
 		snapURL:   snapBase,
 		apiURL:    apiBase,
 	}
+}
+
+// WithNotificationURL sets the webhook Midtrans POSTs to; when empty,
+// Midtrans falls back to the dashboard setting.
+func (c *Client) WithNotificationURL(u string) *Client {
+	c.notificationURL = u
+	return c
+}
+
+// WithFrontendURL sets the base for the finish/unfinish/error callbacks
+// (PRD F.1: redirect is UX-only, never a status source).
+func (c *Client) WithFrontendURL(u string) *Client {
+	c.frontendURL = u
+	return c
 }
 
 // TransactionParams is the minimal data Midtrans needs to create a Snap
@@ -61,6 +77,16 @@ func (c *Client) CreateTransaction(ctx context.Context, p TransactionParams) (*T
 			"order_id":     p.OrderID,
 			"gross_amount": p.GrossAmount,
 		},
+	}
+	if c.notificationURL != "" {
+		payload["notification_url"] = c.notificationURL
+	}
+	if c.frontendURL != "" {
+		payload["callbacks"] = map[string]string{
+			"finish":   c.frontendURL + "/payment/finish",
+			"unfinish": c.frontendURL + "/payment/unfinish",
+			"error":    c.frontendURL + "/payment/error",
+		}
 	}
 	var out Transaction
 	err := c.doJSON(ctx, http.MethodPost, c.snapURL+"/snap/v1/transactions", payload, &out)

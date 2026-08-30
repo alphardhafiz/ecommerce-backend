@@ -81,7 +81,9 @@ func main() {
 	addressSvc := service.NewAddressService(addressRepo)
 	addressHandler := handler.NewAddress(addressSvc)
 	orderRepo := repository.NewOrderRepo(pool)
-	paymentClient := payment.New(cfg.MidtransServerKey, cfg.MidtransIsProduction)
+	paymentClient := payment.New(cfg.MidtransServerKey, cfg.MidtransIsProduction).
+		WithNotificationURL(cfg.NotificationURL).
+		WithFrontendURL(cfg.FrontendURL)
 	if cfg.MidtransServerKey != "" {
 		orderRepo.WithGateway(paymentClient)
 	}

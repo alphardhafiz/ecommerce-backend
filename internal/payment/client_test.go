@@ -20,7 +20,9 @@ func TestCreateTransaction(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := &Client{serverKey: "SB-Mid-server-test", http: srv.Client(), snapURL: srv.URL}
+	c := &Client{serverKey: "SB-Mid-server-test", http: srv.Client(), snapURL: srv.URL,
+		notificationURL: "https://api.example.com/payments/webhook",
+		frontendURL:     "https://shop.example.com"}
 	tx, err := c.CreateTransaction(context.Background(), TransactionParams{OrderID: "order-1", GrossAmount: 50000})
 	if err != nil {
 		t.Fatal(err)
@@ -37,6 +39,36 @@ func TestCreateTransaction(t *testing.T) {
 	details, ok := gotPayload["transaction_details"].(map[string]any)
 	if !ok || details["order_id"] != "order-1" || details["gross_amount"] != float64(50000) {
 		t.Errorf("payload = %v", gotPayload)
+	}
+	if gotPayload["notification_url"] != "https://api.example.com/payments/webhook" {
+		t.Errorf("notification_url = %v", gotPayload["notification_url"])
+	}
+	callbacks, _ := gotPayload["callbacks"].(map[string]any)
+	if callbacks["finish"] != "https://shop.example.com/payment/finish" ||
+		callbacks["unfinish"] != "https://shop.example.com/payment/unfinish" ||
+		callbacks["error"] != "https://shop.example.com/payment/error" {
+		t.Errorf("callbacks = %v", callbacks)
+	}
+}
+
+func TestCreateTransactionWithoutURLs(t *testing.T) {
+	var gotPayload map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&gotPayload)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"token":"t","redirect_url":"u"}`))
+	}))
+	defer srv.Close()
+
+	c := &Client{serverKey: "k", http: srv.Client(), snapURL: srv.URL}
+	if _, err := c.CreateTransaction(context.Background(), TransactionParams{OrderID: "o", GrossAmount: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := gotPayload["notification_url"]; ok {
+		t.Error("notification_url must be omitted when not configured")
+	}
+	if _, ok := gotPayload["callbacks"]; ok {
+		t.Error("callbacks must be omitted when frontend URL is empty")
 	}
 }
 

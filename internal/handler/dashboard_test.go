@@ -115,8 +115,18 @@ func TestDashboardMetrics(t *testing.T) {
 	pool.QueryRow(context.Background(), `SELECT id FROM users WHERE email = 'dash-admin@example.com'`).Scan(&adminID)
 	token := userToken(t, adminID, "admin")
 
-	// baseline (DB may hold data from other tests), then assert deltas
+	// baseline per query variant (DB may hold data from other tests/real
+	// use), then assert deltas against the matching variant
+	oldDay := time.Now().AddDate(0, 0, -41).Format("2006-01-02")
+	yesterday := time.Now().AddDate(0, 0, -1).Format("2006-01-02")
+	today := time.Now().Format("2006-01-02")
+	customQuery := "?start_date=" + oldDay + "&end_date=" + yesterday
+	todayQuery := "?start_date=" + today + "&end_date=" + today
+
 	base := dashboardData(t, dashboardRequest(t, h, token, ""))
+	base7d := dashboardData(t, dashboardRequest(t, h, token, "?period=7d"))
+	baseCustom := dashboardData(t, dashboardRequest(t, h, token, customQuery))
+	baseToday := dashboardData(t, dashboardRequest(t, h, token, todayQuery))
 
 	lowIDs := seedDashboardFixture(t, pool)
 	defer cleanupDashboardFixture(t, pool)
@@ -179,40 +189,37 @@ func TestDashboardMetrics(t *testing.T) {
 	// period 7d: only today's orders (PENDING + PAID), COMPLETED excluded
 	rec = dashboardRequest(t, h, token, "?period=7d")
 	data = dashboardData(t, rec)
-	if got := n(data, "total_orders") - n(base, "total_orders"); got != 2 {
+	if got := n(data, "total_orders") - n(base7d, "total_orders"); got != 2 {
 		t.Errorf("7d total_orders delta = %v, want 2", got)
 	}
-	if got := n(data, "revenue") - n(base, "revenue"); got != 50000 {
+	if got := n(data, "revenue") - n(base7d, "revenue"); got != 50000 {
 		t.Errorf("7d revenue delta = %v, want 50000", got)
 	}
 
 	// period 30d: same as 7d here (COMPLETED is 40 days old)
 	rec = dashboardRequest(t, h, token, "?period=30d")
 	data = dashboardData(t, rec)
-	if got := n(data, "total_orders") - n(base, "total_orders"); got != 2 {
+	if got := n(data, "total_orders") - n(base7d, "total_orders"); got != 2 {
 		t.Errorf("30d total_orders delta = %v, want 2", got)
 	}
-	if got := n(data, "revenue") - n(base, "revenue"); got != 50000 {
+	if got := n(data, "revenue") - n(base7d, "revenue"); got != 50000 {
 		t.Errorf("30d revenue delta = %v, want 50000", got)
 	}
 
 	// custom range covering only the old COMPLETED order
-	oldDay := time.Now().AddDate(0, 0, -41).Format("2006-01-02")
-	yesterday := time.Now().AddDate(0, 0, -1).Format("2006-01-02")
-	rec = dashboardRequest(t, h, token, "?start_date="+oldDay+"&end_date="+yesterday)
+	rec = dashboardRequest(t, h, token, customQuery)
 	data = dashboardData(t, rec)
-	if got := n(data, "total_orders") - n(base, "total_orders"); got != 1 {
+	if got := n(data, "total_orders") - n(baseCustom, "total_orders"); got != 1 {
 		t.Errorf("custom total_orders delta = %v, want 1", got)
 	}
-	if got := n(data, "revenue") - n(base, "revenue"); got != 75000 {
+	if got := n(data, "revenue") - n(baseCustom, "revenue"); got != 75000 {
 		t.Errorf("custom revenue delta = %v, want 75000", got)
 	}
 
 	// today's range: both today orders, old one excluded
-	today := time.Now().Format("2006-01-02")
-	rec = dashboardRequest(t, h, token, "?start_date="+today+"&end_date="+today)
+	rec = dashboardRequest(t, h, token, todayQuery)
 	data = dashboardData(t, rec)
-	if got := n(data, "total_orders") - n(base, "total_orders"); got != 2 {
+	if got := n(data, "total_orders") - n(baseToday, "total_orders"); got != 2 {
 		t.Errorf("today total_orders delta = %v, want 2", got)
 	}
 
