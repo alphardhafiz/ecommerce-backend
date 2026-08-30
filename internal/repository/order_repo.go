@@ -229,9 +229,9 @@ func (r *OrderRepo) Checkout(ctx context.Context, userID string, cartItemIDs []s
 	}
 
 	if _, err := tx.Exec(ctx,
-		`INSERT INTO payments (order_id, midtrans_order_id, status, amount)
-		 VALUES ($1, $2, 'PENDING', $3)`,
-		order.ID, order.ID, total); err != nil {
+		`INSERT INTO payments (order_id, midtrans_order_id, status, amount, snap_token, redirect_url)
+		 VALUES ($1, $2, 'PENDING', $3, $4, $5)`,
+		order.ID, order.ID, total, txInfo.Token, txInfo.RedirectURL); err != nil {
 		return nil, nil, err
 	}
 

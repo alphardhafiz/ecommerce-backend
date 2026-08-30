@@ -29,7 +29,7 @@ func adminOrderHandler(t *testing.T) (*Order, *pgxpool.Pool) {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	return NewOrder(service.NewOrderService(repository.NewOrderRepo(pool))), pool
+	return NewOrder(service.NewOrderService(repository.NewOrderRepo(pool), repository.NewPaymentRepo(pool))), pool
 }
 
 func adminOrdersRequest(t *testing.T, h *Order, method, id, token, body string) *httptest.ResponseRecorder {

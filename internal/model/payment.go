@@ -10,6 +10,8 @@ type Payment struct {
 	Amount          int64
 	PaymentType     *string
 	PaidAt          *time.Time
+	SnapToken       *string
+	RedirectURL     *string
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
 }

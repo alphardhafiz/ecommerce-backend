@@ -87,7 +87,7 @@ func main() {
 	if cfg.MidtransServerKey != "" {
 		orderRepo.WithGateway(paymentClient)
 	}
-	orderSvc := service.NewOrderService(orderRepo)
+	orderSvc := service.NewOrderService(orderRepo, repository.NewPaymentRepo(pool))
 	orderHandler := handler.NewOrder(orderSvc)
 	paymentHandler := handler.NewPayment(paymentClient, service.NewPaymentService(repository.NewPaymentRepo(pool), orderRepo))
 	dashboardHandler := handler.NewDashboard(service.NewDashboardService(repository.NewDashboardRepo(pool)))

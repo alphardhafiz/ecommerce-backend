@@ -80,7 +80,7 @@ func (o *Order) List(w http.ResponseWriter, r *http.Request) {
 
 	data := make([]map[string]any, 0, len(orders))
 	for _, order := range orders {
-		data = append(data, orderPayload(order, itemsByOrder[order.ID]))
+		data = append(data, orderPayload(order, itemsByOrder[order.ID], nil))
 	}
 
 	totalPages := 0
@@ -107,12 +107,12 @@ func (o *Order) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	order, items, err := o.svc.Get(r.Context(), claims.UserID, r.PathValue("id"))
+	order, items, payment, err := o.svc.Get(r.Context(), claims.UserID, r.PathValue("id"))
 	if err != nil {
 		switch {
 		case errors.Is(err, service.ErrForbidden):
 			respondError(w, http.StatusForbidden, "Forbidden", "FORBIDDEN", nil)
-		case errors.Is(err, repository.ErrNotFound):
+		case errors.Is(err, repository.ErrNotFound), errors.Is(err, repository.ErrPaymentNotFound):
 			respondError(w, http.StatusNotFound, "Order not found", "NOT_FOUND", nil)
 		default:
 			respondError(w, http.StatusInternalServerError, "Internal server error", "INTERNAL_ERROR", nil)
@@ -122,11 +122,14 @@ func (o *Order) Get(w http.ResponseWriter, r *http.Request) {
 
 	respondJSON(w, http.StatusOK, map[string]any{
 		"success": true,
-		"data":    orderPayload(order, items),
+		"data":    orderPayload(order, items, payment),
 	})
 }
 
-func orderPayload(order *model.Order, items []*model.OrderItem) map[string]any {
+// orderPayload renders an order; payment carries the snap token only for
+// PENDING orders (pay-now affordance, issue #51), null otherwise — the
+// token is never leaked for paid/expired/cancelled orders.
+func orderPayload(order *model.Order, items []*model.OrderItem, payment *model.Payment) map[string]any {
 	itemData := make([]map[string]any, 0, len(items))
 	for _, it := range items {
 		itemData = append(itemData, map[string]any{
@@ -138,6 +141,13 @@ func orderPayload(order *model.Order, items []*model.OrderItem) map[string]any {
 			"subtotal":     it.Subtotal,
 		})
 	}
+	var paymentData any
+	if payment != nil && order.Status == "PENDING" {
+		paymentData = map[string]any{
+			"snap_token":   payment.SnapToken,
+			"redirect_url": payment.RedirectURL,
+		}
+	}
 	return map[string]any{
 		"id":               order.ID,
 		"status":           order.Status,
@@ -148,6 +158,7 @@ func orderPayload(order *model.Order, items []*model.OrderItem) map[string]any {
 		"expired_at":       order.ExpiredAt,
 		"created_at":       order.CreatedAt,
 		"items":            itemData,
+		"payment":          paymentData,
 	}
 }
 
@@ -202,7 +213,7 @@ func (o *Order) ListAll(w http.ResponseWriter, r *http.Request) {
 
 	data := make([]map[string]any, 0, len(orders))
 	for _, order := range orders {
-		data = append(data, orderPayload(order, itemsByOrder[order.ID]))
+		data = append(data, orderPayload(order, itemsByOrder[order.ID], nil))
 	}
 
 	totalPages := 0

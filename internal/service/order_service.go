@@ -18,11 +18,12 @@ var orderTransitions = map[string]map[string]bool{
 }
 
 type OrderService struct {
-	orders *repository.OrderRepo
+	orders   *repository.OrderRepo
+	payments *repository.PaymentRepo
 }
 
-func NewOrderService(orders *repository.OrderRepo) *OrderService {
-	return &OrderService{orders: orders}
+func NewOrderService(orders *repository.OrderRepo, payments *repository.PaymentRepo) *OrderService {
+	return &OrderService{orders: orders, payments: payments}
 }
 
 // Checkout creates a PENDING order and its Midtrans payment (PRD F.1).
@@ -60,21 +61,26 @@ func (s *OrderService) List(ctx context.Context, userID string, limit, offset in
 	return orders, items, total, nil
 }
 
-// Get returns an order with its items. Returns ErrForbidden when the order
-// belongs to another user (PRD S.6).
-func (s *OrderService) Get(ctx context.Context, userID, orderID string) (*model.Order, []*model.OrderItem, error) {
+// Get returns an order with its items and payment (nil when the order has
+// none). Returns ErrForbidden when the order belongs to another user
+// (PRD S.6).
+func (s *OrderService) Get(ctx context.Context, userID, orderID string) (*model.Order, []*model.OrderItem, *model.Payment, error) {
 	order, err := s.orders.GetByID(ctx, orderID)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	if order.UserID != userID {
-		return nil, nil, ErrForbidden
+		return nil, nil, nil, ErrForbidden
 	}
 	items, err := s.orders.ListItemsByOrderIDs(ctx, []string{order.ID})
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return order, items[order.ID], nil
+	payment, err := s.payments.GetByOrderID(ctx, order.ID)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return order, items[order.ID], payment, nil
 }
 
 // Cancel cancels the user's PENDING order. Returns ErrForbidden for another

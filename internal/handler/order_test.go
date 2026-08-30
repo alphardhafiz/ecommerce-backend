@@ -31,7 +31,7 @@ func newOrderHandler(t *testing.T) (*Order, *pgxpool.Pool) {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	return NewOrder(service.NewOrderService(repository.NewOrderRepo(pool))), pool
+	return NewOrder(service.NewOrderService(repository.NewOrderRepo(pool), repository.NewPaymentRepo(pool))), pool
 }
 
 // cleanupOrderUser removes payments + orders (FKs without cascade) before
@@ -183,7 +183,7 @@ func TestOrderCheckoutMidtransFailureRollsBack(t *testing.T) {
 	t.Cleanup(pool.Close)
 
 	repo := repository.NewOrderRepo(pool).WithGateway(failingGateway{})
-	h := NewOrder(service.NewOrderService(repo))
+	h := NewOrder(service.NewOrderService(repo, repository.NewPaymentRepo(pool)))
 
 	email := "checkout-mt-fail@example.com"
 	userID, itemID, addrID, prodID := seedCheckoutUser(t, pool, email, 50000, 10, 2)
@@ -559,6 +559,10 @@ func TestOrderListAndDetail(t *testing.T) {
 			Status  string `json:"status"`
 			Items   []any  `json:"items"`
 			Address string `json:"shipping_address"`
+			Payment *struct {
+				SnapToken   string `json:"snap_token"`
+				RedirectURL string `json:"redirect_url"`
+			} `json:"payment"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &detail); err != nil {
@@ -566,6 +570,63 @@ func TestOrderListAndDetail(t *testing.T) {
 	}
 	if detail.Data.Status != "PENDING" || len(detail.Data.Items) != 1 {
 		t.Errorf("detail = %+v, want PENDING + 1 item", detail.Data)
+	}
+	// PENDING order carries the pay-now token (issue #51)
+	if detail.Data.Payment == nil || detail.Data.Payment.SnapToken == "" {
+		t.Errorf("detail payment = %+v, want snap_token for PENDING order", detail.Data.Payment)
+	}
+}
+
+// TestOrderDetailPaymentTokenOnlyForPending: the snap token is returned for
+// PENDING orders and never for paid ones (issue #51); the persisted token
+// matches what checkout returned.
+func TestOrderDetailPaymentTokenOnlyForPending(t *testing.T) {
+	h, pool := newOrderHandler(t)
+	email := "orders-paytoken@example.com"
+	userID, itemID, addrID, prodID := seedCheckoutUser(t, pool, email, 50000, 10, 1)
+	defer cleanupOrderUser(t, pool, email)
+	defer pool.Exec(context.Background(), `DELETE FROM products WHERE id = $1`, prodID)
+	token := userToken(t, userID, "user")
+
+	rec := checkoutRequest(t, h, token, `{"cart_item_ids":["`+itemID+`"],"address_id":"`+addrID+`"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("checkout status = %d", rec.Code)
+	}
+	var checkout struct {
+		Data struct {
+			OrderID string `json:"order_id"`
+			Payment struct {
+				SnapToken string `json:"snap_token"`
+			} `json:"payment"`
+		} `json:"data"`
+	}
+	json.Unmarshal(rec.Body.Bytes(), &checkout)
+
+	// PENDING detail: token present and matches the persisted one
+	rec = ordersRequest(t, h, http.MethodGet, "/orders/"+checkout.Data.OrderID, checkout.Data.OrderID, token)
+	var pending struct {
+		Data struct {
+			Payment *struct {
+				SnapToken string `json:"snap_token"`
+			} `json:"payment"`
+		} `json:"data"`
+	}
+	json.Unmarshal(rec.Body.Bytes(), &pending)
+	if pending.Data.Payment == nil || pending.Data.Payment.SnapToken != checkout.Data.Payment.SnapToken {
+		t.Errorf("PENDING payment = %+v, want token %q", pending.Data.Payment, checkout.Data.Payment.SnapToken)
+	}
+
+	// force PAID -> token must not leak
+	pool.Exec(context.Background(), `UPDATE orders SET status = 'PAID' WHERE id = $1`, checkout.Data.OrderID)
+	rec = ordersRequest(t, h, http.MethodGet, "/orders/"+checkout.Data.OrderID, checkout.Data.OrderID, token)
+	var paid struct {
+		Data struct {
+			Payment any `json:"payment"`
+		} `json:"data"`
+	}
+	json.Unmarshal(rec.Body.Bytes(), &paid)
+	if paid.Data.Payment != nil {
+		t.Errorf("PAID payment = %v, want null", paid.Data.Payment)
 	}
 }
 
