@@ -101,7 +101,7 @@ okey- [x] Test: angka sesuai data seed
 
 - [x] Product list cache (`products:list:{hash}`, TTL 5m, invalidasi prefix via SCAN+DEL)
 - [x] Product detail cache (`product:detail:{id}`, TTL 10m, invalidasi targeted)
-- [ ] Category list cache (`categories:active`, TTL 30m)
+- [x] Category list cache (`categories:active`, TTL 30m)
 - [ ] Rate limit Redis: login/register strict (fail-closed), endpoint umum (fail-open)
 - [ ] Test: fallback saat Redis down
 

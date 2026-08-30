@@ -65,7 +65,7 @@ func main() {
 	userSvc := service.NewUserService(userRepo)
 	userHandler := handler.NewUser(userSvc)
 	categoryRepo := repository.NewCategoryRepo(pool)
-	categorySvc := service.NewCategoryService(categoryRepo)
+	categorySvc := service.NewCategoryService(categoryRepo).WithCache(redisCache)
 	categoryHandler := handler.NewCategory(categorySvc)
 	productRepo := repository.NewProductRepo(pool)
 	productSvc := service.NewProductService(productRepo).WithStorage(
